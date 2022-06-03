@@ -2,7 +2,7 @@
 %% @copyright 2014 Maas-Maarten Zeeman
 %%
 %% @doc Diffy, an erlang diff match and patch implementation 
-%%
+%% @end
 %% Copyright 2014 Maas-Maarten Zeeman
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,8 +23,11 @@
 -export([make_patch/1, apply_patch/2]).
 
 
-%% Make a simple patch with edit operations.
-%%
+%% @doc Make a simple patch with edit operations.
+
+-spec make_patch(Diffs) -> Result when
+	Diffs :: diffy_term:diffs(),
+	Result :: diffy_term:diffs().
 make_patch(Diffs) ->
     make_patch(Diffs, []).
 
@@ -43,6 +46,11 @@ patch_op(delete) -> skip;
 patch_op(equal) -> copy.
 
 % @doc Use the SourceText to reconstruct the destination text.
+
+-spec apply_patch(SourceText, Diffs) -> Result when
+	SourceText :: unicode:unicode_binary(), 
+	Diffs :: diffy_term:diffs(),
+	Result :: binary().
 apply_patch(SourceText, Diffs) ->
     apply_patch(SourceText, 0, Diffs, []).
 

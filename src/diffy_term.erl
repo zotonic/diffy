@@ -3,7 +3,7 @@
 %%
 %% @doc Diffy, an erlang diff match and patch implementation 
 %%      Adapted from diffy.erl for simple diff on a list of Erlang terms
-%%
+%% @end
 %% Copyright 2014-2015 Maas-Maarten Zeeman, Marc Worrell
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");

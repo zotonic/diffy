@@ -21,21 +21,34 @@ test: eunit
 
 eunit: $(REBAR)
 	$(REBAR) as test eunit
-
+	
 xref: $(REBAR)
 	$(REBAR) as test xref
 
 dialyzer: $(REBAR)
 	$(REBAR) as test dialyzer
 
-clean: $(REBAR)
+clean: $(REBAR) clean_doc
 	$(REBAR) clean
+
+clean_doc:
+	@rm -f doc/*.html
+	@rm -f doc/erlang.png
+	@rm -f doc/edoc-info
 
 distclean:
 	rm -rf _build
 	rm $(REBAR)
 
+doc:  $(REBAR)
+	$(REBAR) edoc
 
+doc_private: $(REBAR)
+	$(REBAR) as doc_private edoc
+
+exdoc: $(REBAR)
+	$(REBAR) ex_doc --output exdoc --formatter html
+	
 # dializer 
 
 build-plt:

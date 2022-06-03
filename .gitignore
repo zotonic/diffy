@@ -8,3 +8,10 @@ deps
 *.plt
 erl_crash.dump
 tags
+doc/*
+!doc/style.css
+!doc/overview.edoc
+!doc/img
+!doc/img/*
+!doc/img/logo.png
+exdoc

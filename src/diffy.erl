@@ -2,7 +2,7 @@
 %% @copyright 2014-2019 Maas-Maarten Zeeman
 %%
 %% @doc Diffy, an erlang diff match and patch implementation 
-%%
+%% @end
 %% Copyright 2014-2019 Maas-Maarten Zeeman
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
@@ -79,9 +79,20 @@
     length2 = 0
 }).
 
+-type patch() :: #patch{
+						diffs :: diffs(),
+						start1 :: non_neg_integer(),
+						start2 :: non_neg_integer(),
+						length1 :: non_neg_integer(),
+						length2 :: non_neg_integer()
+					}.
+
 % @doc Compute the difference between two binary texts
 %
--spec diff(unicode:unicode_binary(), unicode:unicode_binary()) -> diffs().
+-spec diff(Text1, Text2) -> Result when
+	Text1 :: unicode:unicode_binary(), 
+	Text2 :: unicode:unicode_binary(),
+	Result :: diffs().
 diff(Text1, Text2) ->
     diff(Text1, Text2, true).
 
@@ -278,7 +289,11 @@ compute_diff1(Text1, Text2, false) ->
     diff_bisect(Text1, Text2).
 
 
-%% Compute diff in linemode
+%% @doc Compute diff in linemode
+-spec diff_linemode(Text1, Text2) -> Result when
+	Text1 :: unicode:unicode_binary(), 
+	Text2 :: unicode:unicode_binary(),
+	Result :: diffs().
 diff_linemode(Text1, Text2) ->
     {CharText1, CharText2, Lines} = lines_to_chars(Text1, Text2),
     Diffs = diff(CharText1, CharText2, false),
@@ -363,10 +378,10 @@ chars_to_lines([{Op, Data}|Rest], LineArray, Acc) ->
     chars_to_lines(Rest, LineArray, [{Op, Data1}|Acc]).
 
 
-% Find the 'middle snake' of a diff, split the problem in two
+%% @doc Find the 'middle snake' of a diff, split the problem in two
 %%      and return the recursively constructed diff.
 %%      See Myers 1986 paper: An O(ND) Difference Algorithm and Its Variations.
-%%
+%%```
 %%    Args:
 %%      text1: Old string to be diffed.
 %%      text2: New string to be diffed.
@@ -374,7 +389,15 @@ chars_to_lines([{Op, Data}|Rest], LineArray, Acc) ->
 %%
 %%    Returns:
 %%      Array of diff tuples.
-%%    """
+%%'''
+%% @throws {overlap, A1, B1, X, Y}
+
+-spec diff_bisect(A, B) -> Result when
+	A :: unicode:unicode_binary(), 
+	B :: unicode:unicode_binary(), 
+	Result :: [DiffTuple],
+	DiffTuple :: {diff_op(), DiffTupleItem},
+	DiffTupleItem :: unicode:unicode_binary().
 diff_bisect(A, B) when is_binary(A) andalso is_binary(B) ->
     ArrA = array_from_binary(A),
     ArrB = array_from_binary(B),
@@ -521,7 +544,10 @@ diff_bisect_split(A, B, X, Y) ->
     Diffs ++ DiffsB.
 
 % @doc Convert the diffs into a pretty html report
--spec pretty_html(diffs()) -> iolist().
+
+-spec pretty_html(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: iolist().
 pretty_html(Diffs) ->
     pretty_html(Diffs, []).
 
@@ -540,6 +566,10 @@ pretty_html([{Op, Data}|T], Acc) ->
     pretty_html(T, [HTML|Acc]).
 
 % @doc Compute the source text from a list of diffs.
+
+-spec source_text(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: unicode:unicode_binary().
 source_text(Diffs) ->
     source_text(Diffs, <<>>).
 
@@ -552,7 +582,10 @@ source_text([{_Op, Data}|T], Acc) ->
     
 
 % @doc Compute the destination text from a list of diffs.
-destination_text(Diffs) ->
+-spec destination_text(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: unicode:unicode_binary().
+destination_text(Diffs) -> 
     destination_text(Diffs, <<>>).
     
 destination_text([], Acc) -> 
@@ -562,7 +595,11 @@ destination_text([{delete, _Data}|T], Acc) ->
 destination_text([{_Op, Data}|T], Acc) ->
     destination_text(T, <<Acc/binary, Data/binary>>).
     
-% @doc Compute the Levenshtein distance, the number of inserted, deleted or substituted characters.
+%% @doc Compute the Levenshtein distance, the number of inserted, deleted or substituted characters.
+
+-spec levenshtein(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: non_neg_integer().
 levenshtein(Diffs) ->
     levenshtein(Diffs, 0, 0, 0).
 
@@ -579,7 +616,9 @@ levenshtein([{equal, _Data}|T], Insertions, Deletions, Levenshtein) ->
 %@ @doc Cleanup diffs. 
 % Remove empty operations, merge equal opearations, edits before equal operation and common prefix operations.
 %
--spec cleanup_merge(diffs()) -> diffs().
+-spec cleanup_merge(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: diffs().
 cleanup_merge(Diffs) ->
     cleanup_merge(Diffs, []). 
 
@@ -620,9 +659,11 @@ cleanup_merge([{equal, E1}=H|T], [{Op, I}, {equal, E2}|AccTail]=Acc) when Op =:=
 cleanup_merge([H|T], Acc) ->
     cleanup_merge(T, [H|Acc]).
 
-% @doc Do semantic cleanup of diffs
-%
--spec cleanup_semantic(diffs()) -> diffs().
+%% @doc Do semantic cleanup of diffs
+
+-spec cleanup_semantic(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: diffs().
 cleanup_semantic(Diffs) ->
     cleanup_semantic(Diffs, []).
 
@@ -631,12 +672,18 @@ cleanup_semantic([], Acc) ->
 cleanup_semantic([H|T], Acc) ->
     cleanup_semantic(T, [H|Acc]).
 
-% @doc Do efficiency cleanup of diffs.
-%
--spec cleanup_efficiency(diffs()) -> diffs().
+%% @doc Do efficiency cleanup of diffs.
+
+-spec cleanup_efficiency(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: diffs().
 cleanup_efficiency(Diffs) ->
     cleanup_efficiency(Diffs, 4).
 
+-spec cleanup_efficiency(Diffs, EditCost) -> Result when
+	Diffs :: diffs(),
+	EditCost :: non_neg_integer(),
+	Result :: diffs().
 cleanup_efficiency(Diffs, EditCost) ->
     cleanup_efficiency(Diffs, false, EditCost, []).
 
@@ -693,18 +740,29 @@ text_smaller_than(<<_C, Rest/binary>>, Size) when Size > 0 ->
     text_smaller_than(Rest, Size-1).
 
 % @doc create a patch from a list of diffs
+
+-spec make_patch(Diffs) -> Result when
+	Diffs :: diffs(),
+	Result :: [patch()].
 make_patch(Diffs) when is_list(Diffs) ->
     %% Reconstruct the source-text from the diffs.
     make_patch(Diffs, source_text(Diffs)).
 
 % @doc create a patch from the source and destination texts
+
+-spec make_patch(SourceText, DestinationText) -> Result when
+	SourceText :: unicode:unicode_binary(), 
+	DestinationText :: unicode:unicode_binary(),
+	Result :: [patch()].
 make_patch(SourceText, DestinationText) when is_binary(SourceText) andalso is_binary(DestinationText) ->
     Diffs = diff(SourceText, DestinationText),
     Diffs1 = cleanup_semantic(Diffs),
     Diffs2 = cleanup_efficiency(Diffs1),
     make_patch(Diffs2, SourceText);
 
-% @doc Creata a patch from a list of diffs and the source text.
+%% @doc Creata a patch from a list of diffs and the source text.
+%% @throws throw(not_yet)
+
 make_patch(Diffs, SourceText) when is_list(Diffs) andalso is_binary(SourceText) ->
     make_patch(Diffs, SourceText, SourceText, 0, 0, [#patch{}]).
 
@@ -767,7 +825,13 @@ make_patch([{equal, Data}|T], PrePatchText, PostPatchText, Count1, Count2, [Patc
     make_patch(T, PrePatchText, PostPatchText, Count1+Size, Count2+Size, [P|Rest]).
 
     
-% @doc Returns true iff Pattern is a unique match inside Text.
+%% @doc Returns `true' if `Pattern' is a unique match inside `Text'.
+
+-spec unique_match(Pattern, Text) -> Result when
+	Pattern :: Found | nomatch, 
+	Text :: unicode:unicode_binary(), 
+	Result :: boolean(),
+	Found :: binary:part().
 unique_match(Pattern, Text) ->
     TextSize = size(Text),
     case binary:match(Text, Pattern) of
@@ -843,6 +907,14 @@ for(From, To, Step, Fun, State) ->
             S1
     end.
 
+-spec split_pre_and_suffix(Text1, Text2) -> Result when
+	Text1 :: unicode:unicode_binary(), 
+	Text2 :: unicode:unicode_binary(),
+	Result :: {Prefix, MiddleText1, MiddleText2, Suffix},
+	Prefix :: unicode:unicode_binary(),
+	MiddleText1 :: unicode:unicode_binary(), 
+	MiddleText2 :: unicode:unicode_binary(),
+	Suffix :: unicode:unicode_binary().
 split_pre_and_suffix(Text1, Text2) ->
     Prefix = common_prefix(Text1, Text2),
     PrefixLen = size(Prefix),
@@ -859,7 +931,7 @@ split_pre_and_suffix(Text1, Text2) ->
     {Prefix, MiddleText1, MiddleText2, Suffix}.
 
     
-% @doc Return the common prefix of Text1 and Text2. (utf8 aware)
+%% @doc Return the common prefix of Text1 and Text2. (utf8 aware)
 common_prefix(Text1, Text2) ->
     Length = binary:longest_common_prefix([Text1, Text2]),
     Prefix = binary:part(Text1, 0, Length),
@@ -868,7 +940,7 @@ common_prefix(Text1, Text2) ->
     {Prefix1, _} = repair_tail(Prefix),
     Prefix1.
 
-% @doc Return the common prefix of Text1 and Text2 (utf8 aware)
+%% @doc Return the common prefix of Text1 and Text2 (utf8 aware)
 common_suffix(Text1, Text2) ->
     Length = binary:longest_common_suffix([Text1, Text2]),
     Suffix = binary:part(Text1, size(Text1), -Length),
@@ -878,7 +950,12 @@ common_suffix(Text1, Text2) ->
     Suffix1.
 
 
-% @doc Count the number of characters in a utf8 binary.
+%% @doc Count the number of characters in a utf8 binary.
+%% @throws error(badarg)
+
+-spec text_size(Text) -> Result when
+	Text :: unicode:unicode_binary(),
+	Result :: non_neg_integer().
 text_size(Text) when is_binary(Text) ->
     text_size(Text, 0).
 
@@ -894,6 +971,7 @@ text_size(_, _) ->
 %%
 
 % @doc Create an array from a utf8 binary.
+
 array_from_binary(Bin) when is_binary(Bin) ->
     array_from_binary(Bin, 0, array:new()).
 

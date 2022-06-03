@@ -1,0 +1,9 @@
+@author Maas-Maarten Zeeman <mmzeeman@xs4all.nl>
+@author Marc Worrell 
+   [https://whatwebwhat.com/]
+@author Zotonic Team 
+   [http://zotonic.com]
+@title diffy
+@doc Diff, match patch implementation
+@copyright Apache-2.0
+@since 2014

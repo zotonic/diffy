@@ -1,6 +1,7 @@
-# Diffy
-
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?logo=apache&logoColor=red)](https://www.apache.org/licenses/LICENSE-2.0)
 ![Test](https://github.com/zotonic/diffy/workflows/Test/badge.svg)
+
+# Diffy
 
 Diff, Match and Patch implementation for Erlang. 
 
@@ -30,3 +31,16 @@ Example
 Much good info about diff, match and patch can found at
 link: http://neil.fraser.name/writing/diff/
 
+## Documentation generation
+
+## EDoc
+
+### Generate public API
+`make docs` or `rebar3 edoc`
+
+## Generate private API
+`make doc_private` or `rebar3 as doc_private edoc`
+
+#ExDoc
+
+`make exdoc` or `rebar3 ex_doc --output exdoc --formatter html`
