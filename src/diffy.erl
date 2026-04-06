@@ -581,7 +581,8 @@ levenshtein([{equal, _Data}|T], Insertions, Deletions, Levenshtein) ->
 %
 -spec cleanup_merge(diffs()) -> diffs().
 cleanup_merge(Diffs) ->
-    cleanup_merge(Diffs, []). 
+    Diffs1 = cleanup_merge(Diffs, []),
+    canonicalize_edits(Diffs1, []).
 
 %% Done
 cleanup_merge([], Acc) ->
@@ -620,16 +621,273 @@ cleanup_merge([{equal, E1}=H|T], [{Op, I}, {equal, E2}|AccTail]=Acc) when Op =:=
 cleanup_merge([H|T], Acc) ->
     cleanup_merge(T, [H|Acc]).
 
+canonicalize_edits([{insert, I}, {delete, D} | T], Acc) ->
+    canonicalize_edits(T, [{insert, I}, {delete, D} | Acc]);
+canonicalize_edits([H | T], Acc) ->
+    canonicalize_edits(T, [H | Acc]);
+canonicalize_edits([], Acc) ->
+    lists:reverse(Acc).
+
 % @doc Do semantic cleanup of diffs
 %
 -spec cleanup_semantic(diffs()) -> diffs().
 cleanup_semantic(Diffs) ->
-    cleanup_semantic(Diffs, []).
+    Diffs1 = cleanup_semantic_breakpoints(Diffs),
+    Diffs2 = cleanup_merge(Diffs1),
+    Diffs3 = cleanup_semantic_lossless(Diffs2),
+    cleanup_semantic_overlaps(Diffs3).
 
-cleanup_semantic([], Acc) ->
-    lists:reverse(Acc);
-cleanup_semantic([H|T], Acc) ->
-    cleanup_semantic(T, [H|Acc]).
+cleanup_semantic_breakpoints(Diffs) ->
+    case find_breakpoint(Diffs, [], 0, 0, 0, 0, undefined) of
+        {found, NewDiffs} -> cleanup_semantic_breakpoints(NewDiffs);
+        not_found -> Diffs
+    end.
+
+find_breakpoint([], _Acc, _LI1, _LD1, _LI2, _LD2, _LE) ->
+    not_found;
+find_breakpoint([{equal, Data} | T], Acc, _LI1, _LD1, LI2, LD2, _LE) ->
+    find_breakpoint(T, [{equal, Data} | Acc], LI2, LD2, 0, 0, Data);
+find_breakpoint([{insert, Data} | T], Acc, LI1, LD1, LI2, LD2, LE) ->
+    NewLI2 = LI2 + text_size(Data),
+    case is_breakpoint(LE, LI1, LD1, NewLI2, LD2) of
+        true -> {found, apply_breakpoint(LE, Acc, [{insert, Data} | T])};
+        false -> find_breakpoint(T, [{insert, Data} | Acc], LI1, LD1, NewLI2, LD2, LE)
+    end;
+find_breakpoint([{delete, Data} | T], Acc, LI1, LD1, LI2, LD2, LE) ->
+    NewLD2 = LD2 + text_size(Data),
+    case is_breakpoint(LE, LI1, LD1, LI2, NewLD2) of
+        true -> {found, apply_breakpoint(LE, Acc, [{delete, Data} | T])};
+        false -> find_breakpoint(T, [{delete, Data} | Acc], LI1, LD1, LI2, NewLD2, LE)
+    end.
+
+is_breakpoint(undefined, _, _, _, _) -> false;
+is_breakpoint(LE, LI1, LD1, LI2, LD2) ->
+    LEN = text_size(LE),
+    LEN =< max(LI1, LD1) andalso LEN =< max(LI2, LD2).
+
+apply_breakpoint(LE, Acc, T) ->
+    replace_equality(LE, Acc, T).
+
+replace_equality(LE, [{equal, LE} | T_Acc], T) ->
+    lists:reverse(T_Acc) ++ [{delete, LE}, {insert, LE} | T];
+replace_equality(LE, [H | T_Acc], T) ->
+    replace_equality(LE, T_Acc, [H | T]).
+
+cleanup_semantic_lossless(Diffs) ->
+    cleanup_semantic_lossless(Diffs, []).
+
+cleanup_semantic_lossless([{equal, E1}, {Op, Edit}, {equal, E2} | T], Acc) when ?IS_INS_OR_DEL(Op) ->
+    {NewE1, NewEdit, NewE2} = slide_edit(E1, Edit, E2),
+    case NewE1 of
+        <<>> ->
+            cleanup_semantic_lossless(lists:reverse(Acc, [{Op, NewEdit}, {equal, NewE2} | T]), []);
+        _ ->
+            case NewE2 of
+                <<>> ->
+                    cleanup_semantic_lossless(lists:reverse(Acc, [{equal, NewE1}, {Op, NewEdit} | T]), []);
+                _ ->
+                    cleanup_semantic_lossless([{Op, NewEdit}, {equal, NewE2} | T], [{equal, NewE1} | Acc])
+            end
+    end;
+cleanup_semantic_lossless([H | T], Acc) ->
+    cleanup_semantic_lossless(T, [H | Acc]);
+cleanup_semantic_lossless([], Acc) ->
+    lists:reverse(Acc).
+
+slide_edit(E1, Edit, E2) ->
+    Suffix = common_suffix(E1, Edit),
+    {E1_1, Edit_1, E2_1} = case Suffix of
+        <<>> -> {E1, Edit, E2};
+        _ ->
+            SLen = size(Suffix),
+            { binary:part(E1, 0, size(E1) - SLen),
+              <<Suffix/binary, (binary:part(Edit, 0, size(Edit) - SLen))/binary>>,
+              <<Suffix/binary, E2/binary>> }
+    end,
+    find_best_slide(E1_1, Edit_1, E2_1).
+
+find_best_slide(E1, Edit, E2) ->
+    Score = cleanup_semantic_score(E1, Edit) + cleanup_semantic_score(Edit, E2),
+    find_best_slide(E1, Edit, E2, Score, E1, Edit, E2).
+
+find_best_slide(E1, Edit, E2, BestScore, BestE1, BestEdit, BestE2) ->
+    case can_slide_right(Edit, E2) of
+        {true, Char, RestEdit, RestE2} ->
+            NewE1 = <<E1/binary, Char/binary>>,
+            NewEdit = <<RestEdit/binary, Char/binary>>,
+            NewE2 = RestE2,
+            NewScore = cleanup_semantic_score(NewE1, NewEdit) + cleanup_semantic_score(NewEdit, NewE2),
+            if
+                NewScore >= BestScore ->
+                    find_best_slide(NewE1, NewEdit, NewE2, NewScore, NewE1, NewEdit, NewE2);
+                true ->
+                    find_best_slide(NewE1, NewEdit, NewE2, BestScore, BestE1, BestEdit, BestE2)
+            end;
+        false ->
+            {BestE1, BestEdit, BestE2}
+    end.
+
+can_slide_right(<<C/utf8, RestEdit/binary>>, <<C/utf8, RestE2/binary>>) ->
+    {true, <<C/utf8>>, RestEdit, RestE2};
+can_slide_right(_, _) ->
+    false.
+
+cleanup_semantic_score(<<>>, _) -> 6;
+cleanup_semantic_score(_, <<>>) -> 6;
+cleanup_semantic_score(One, Two) ->
+    Char1 = last_char(One),
+    Char2 = first_char(Two),
+    NonAlphaNumeric1 = is_non_alphanumeric(Char1),
+    NonAlphaNumeric2 = is_non_alphanumeric(Char2),
+    Whitespace1 = NonAlphaNumeric1 andalso is_whitespace(Char1),
+    Whitespace2 = NonAlphaNumeric2 andalso is_whitespace(Char2),
+    LineBreak1 = Whitespace1 andalso is_linebreak(Char1),
+    LineBreak2 = Whitespace2 andalso is_linebreak(Char2),
+    BlankLine1 = LineBreak1 andalso is_blankline_end(One),
+    BlankLine2 = LineBreak2 andalso is_blankline_start(Two),
+    if
+        BlankLine1 orelse BlankLine2 -> 5;
+        LineBreak1 orelse LineBreak2 -> 4;
+        NonAlphaNumeric1 andalso (not Whitespace1) andalso Whitespace2 -> 3;
+        Whitespace1 orelse Whitespace2 -> 2;
+        NonAlphaNumeric1 orelse NonAlphaNumeric2 -> 1;
+        true -> 0
+    end.
+
+cleanup_semantic_overlaps(Diffs) ->
+    cleanup_semantic_overlaps(Diffs, []).
+
+cleanup_semantic_overlaps([{delete, Del}, {insert, Ins} | T], Acc) ->
+    Overlap1 = common_overlap(Del, Ins),
+    Overlap2 = common_overlap(Ins, Del),
+    if
+        Overlap1 >= Overlap2 ->
+            TDel = text_size(Del),
+            TIns = text_size(Ins),
+            case Overlap1 >= TDel / 2 orelse Overlap1 >= TIns / 2 of
+                true ->
+                    Common = substring_start(Ins, Overlap1),
+                    NewDel = substring_start(Del, TDel - Overlap1),
+                    NewIns = skip_chars(Ins, Overlap1),
+                    cleanup_semantic_overlaps([{insert, NewIns} | T], [{equal, Common}, {delete, NewDel} | Acc]);
+                false ->
+                    cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
+            end;
+        true ->
+            TDel = text_size(Del),
+            TIns = text_size(Ins),
+            case Overlap2 >= TDel / 2 orelse Overlap2 >= TIns / 2 of
+                true ->
+                    Common = substring_start(Del, Overlap2),
+                    NewIns = substring_start(Ins, TIns - Overlap2),
+                    NewDel = skip_chars(Del, Overlap2),
+                    cleanup_semantic_overlaps([{delete, NewDel} | T], [{equal, Common}, {insert, NewIns} | Acc]);
+                false ->
+                    cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
+            end
+    end;
+cleanup_semantic_overlaps([H | T], Acc) ->
+    cleanup_semantic_overlaps(T, [H | Acc]);
+cleanup_semantic_overlaps([], Acc) ->
+    lists:reverse(Acc).
+
+%% Helper functions for semantic cleanup
+
+common_overlap(<<>>, _) -> 0;
+common_overlap(_, <<>>) -> 0;
+common_overlap(Text1, Text2) ->
+    T1Len = text_size(Text1),
+    T2Len = text_size(Text2),
+    {T1, T2} = if
+        T1Len > T2Len -> {substring_end(Text1, T2Len), Text2};
+        T1Len < T2Len -> {Text1, substring_start(Text2, T1Len)};
+        true -> {Text1, Text2}
+    end,
+    TMin = min(T1Len, T2Len),
+    if
+        T1 =:= T2 -> TMin;
+        true -> common_overlap_loop(T1, T2, TMin, 0, 1)
+    end.
+
+common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
+    Pattern = substring_end(T1, Length),
+    case binary:match(T2, Pattern) of
+        nomatch -> Best;
+        {FoundByteOffset, _} ->
+            FoundCharCount = text_size(binary:part(T2, 0, FoundByteOffset)),
+            NewLength = Length + FoundCharCount,
+            case NewLength > TMin of
+                true -> Best;
+                false ->
+                    case FoundCharCount =:= 0 orelse substring_end(T1, NewLength) =:= substring_start(T2, NewLength) of
+                        true ->
+                            common_overlap_loop(T1, T2, TMin, NewLength, NewLength + 1);
+                        false ->
+                            common_overlap_loop(T1, T2, TMin, Best, NewLength + 1)
+                    end
+            end
+    end;
+common_overlap_loop(_T1, _T2, _TMin, Best, _Length) ->
+    Best.
+
+first_char(<<C/utf8, _/binary>>) -> C;
+first_char(_) -> undefined.
+
+last_char(Bin) ->
+    last_char(Bin, undefined).
+last_char(<<C/utf8, Rest/binary>>, _Last) -> last_char(Rest, C);
+last_char(<<>>, Last) -> Last.
+
+substring_start(Bin, Len) ->
+    substring_start(Bin, Len, <<>>).
+substring_start(_, 0, Acc) -> Acc;
+substring_start(<<C/utf8, Rest/binary>>, Len, Acc) ->
+    substring_start(Rest, Len - 1, <<Acc/binary, C/utf8>>);
+substring_start(<<>>, _, Acc) -> Acc.
+
+substring_end(Bin, Len) ->
+    TotalLen = text_size(Bin),
+    if
+        TotalLen =< Len -> Bin;
+        true -> skip_chars(Bin, TotalLen - Len)
+    end.
+
+skip_chars(Bin, 0) -> Bin;
+skip_chars(<<_/utf8, Rest/binary>>, N) -> skip_chars(Rest, N - 1);
+skip_chars(<<>>, _) -> <<>>.
+
+is_non_alphanumeric(undefined) -> true;
+is_non_alphanumeric(C) ->
+    not ((C >= $a andalso C =< $z) orelse
+         (C >= $A andalso C =< $Z) orelse
+         (C >= $0 andalso C =< $9)).
+
+is_whitespace(undefined) -> false;
+is_whitespace(C) ->
+    case C of
+        $\s -> true;
+        $\t -> true;
+        $\n -> true;
+        $\r -> true;
+        $\f -> true;
+        $\v -> true;
+        _ -> false
+    end.
+
+is_linebreak(C) ->
+    C =:= $\n orelse C =:= $\r.
+
+is_blankline_end(Bin) ->
+    case re:run(Bin, <<"\n\r?\n$">> ) of
+        {match, _} -> true;
+        nomatch -> false
+    end.
+
+is_blankline_start(Bin) ->
+    case re:run(Bin, <<"^\r?\n\r?\n">> ) of
+        {match, _} -> true;
+        nomatch -> false
+    end.
 
 % @doc Do efficiency cleanup of diffs.
 %

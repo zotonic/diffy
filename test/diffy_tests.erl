@@ -225,14 +225,14 @@ cleanup_semantic_test() ->
     ?assertEqual([{delete, <<"abc">>}, {insert, <<"ABC">>}, {equal, <<"1234">>}, {delete, <<"wxyz">>}], 
         cleanup_semantic([{delete, <<"abc">>}, {insert, <<"ABC">>}, {equal, <<"1234">>}, {delete, <<"wxyz">>}])),
 
-    % % Simple elimination.
-    % ?assertEqual([{delete, <<"abc">>}, {insert, <<"b">>}], 
-    %     cleanup_semantic([{delete, <<"a">>}, {equal, <<"b">>}, {delete, <<"c">>}])),
+    % Simple elimination.
+    ?assertEqual([{delete, <<"abc">>}, {insert, <<"b">>}], 
+        cleanup_semantic([{delete, <<"a">>}, {equal, <<"b">>}, {delete, <<"c">>}])),
 
-    % % Multiple eliminations.
-    % ?assertEqual([{delete, <<"AB_AB">>}, {insert, <<"1A2_1A2">>}], 
-    %     cleanup_semantic([{insert, <<"1">>}, {equal, <<"A">>}, {delete, <<"B">>}, {insert, <<"2">>}, 
-    %         {equal, <<"_">>}, {insert, <<"1">>}, {equal, <<"A">>}, {delete, <<"B">>}, {insert, <<"2">>}])),
+    % Multiple eliminations.
+    ?assertEqual([{delete, <<"AB_AB">>}, {insert, <<"1A2_1A2">>}], 
+        cleanup_semantic([{insert, <<"1">>}, {equal, <<"A">>}, {delete, <<"B">>}, {insert, <<"2">>}, 
+            {equal, <<"_">>}, {insert, <<"1">>}, {equal, <<"A">>}, {delete, <<"B">>}, {insert, <<"2">>}])),
 
     ok.
 
@@ -261,7 +261,7 @@ cleanup_efficiency_test() ->
         cleanup_efficiency([{delete, <<"ab">>}, {insert, <<"12">>}, {equal, <<"xyz">>}, {delete, <<"cd">>}, {insert, <<"34">>}])),
 
     % Three-edit elimination
-    ?assertEqual([{insert, <<"12x34">>}, {delete, <<"xcd">>}], 
+    ?assertEqual([{delete, <<"xcd">>}, {insert, <<"12x34">>}], 
         cleanup_efficiency([{insert, <<"12">>}, {equal, <<"x">>}, {delete, <<"cd">>}, {insert, <<"34">>}])),
 
     % Backpass elimination
