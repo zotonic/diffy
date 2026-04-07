@@ -79,6 +79,8 @@
     length2 = 0
 }).
 
+-dialyzer({no_match, for/5}).
+
 % @doc Compute the difference between two binary texts
 %
 -spec diff(unicode:unicode_binary(), unicode:unicode_binary()) -> diffs().
@@ -1105,10 +1107,8 @@ for(From, To, _Step, _Fun, State) when From >= To ->
     State;
 for(From, To, Step, Fun, State) ->
     case Fun(From, State) of
-        {continue, S1} ->
-            for(From + Step, To, Step, Fun, S1);
-        {break, S1} ->
-            S1
+        {continue, S1} -> for(From + Step, To, Step, Fun, S1);
+        {break, S1} -> S1
     end.
 
 split_pre_and_suffix(Text1, Text2) ->
