@@ -32,11 +32,10 @@ prop_cleanup_merge() ->
         begin
             SourceText = diffy:source_text(Diffs),
             DestinationText = diffy:destination_text(Diffs),
-
             CleanDiffs = cleanup_merge(Diffs),
 
-            SourceText == diffy:source_text(CleanDiffs)
-            andalso DestinationText == diffy:destination_text(CleanDiffs)
+            SourceText =:= diffy:source_text(CleanDiffs)
+            andalso DestinationText =:= diffy:destination_text(CleanDiffs)
         end).
 
 prop_cleanup_efficiency() ->
@@ -44,11 +43,10 @@ prop_cleanup_efficiency() ->
         begin
             SourceText = diffy:source_text(Diffs),
             DestinationText = diffy:destination_text(Diffs),
-
             EfficientDiffs = cleanup_efficiency(Diffs),
 
-            SourceText == diffy:source_text(EfficientDiffs) andalso
-            DestinationText == diffy:destination_text(EfficientDiffs)
+            SourceText =:= diffy:source_text(EfficientDiffs)
+            andalso DestinationText =:= diffy:destination_text(EfficientDiffs)
         end).
 
 prop_cleanup_semantic() ->
@@ -57,8 +55,9 @@ prop_cleanup_semantic() ->
             SourceText = diffy:source_text(Diffs),
             DestinationText = diffy:destination_text(Diffs),
             EfficientDiffs = cleanup_semantic(Diffs),
-            SourceText =:= diffy:source_text(EfficientDiffs) andalso
-            DestinationText =:= diffy:destination_text(EfficientDiffs)
+
+            SourceText =:= diffy:source_text(EfficientDiffs)
+            andalso DestinationText =:= diffy:destination_text(EfficientDiffs)
         end).
 
 html_like() ->
@@ -247,19 +246,19 @@ cleanup_semantic_test() ->
     ok.
 
 cleanup_efficiency_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_cleanup_efficiency(), [{numtests, 500}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_cleanup_efficiency(), [{numtests, 800}, {to_file, user}])),
     ok.
 
 cleanup_semantic_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_cleanup_semantic(), [{numtests, 500}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_cleanup_semantic(), [{numtests, 800}, {to_file, user}])),
     ok.
 
 random_diffs_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_make_diff(), [{numtests, 500}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_make_diff(), [{numtests, 800}, {to_file, user}])),
     ok.
 
 random_inner_diff_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_inner_diff(), [{numtests, 500}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_inner_diff(), [{numtests, 800}, {to_file, user}])),
     ok.
 
 cleanup_efficiency_test() ->
