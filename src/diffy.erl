@@ -375,13 +375,15 @@ decode_lines([{Op, Data} | Rest], LinesTuple, Acc) ->
 %%      Array of diff tuples.
 %%    """
 diff_bisect(A, B) when is_binary(A) andalso is_binary(B) ->
-    ArrA = array_from_binary(A),
-    ArrB = array_from_binary(B),
-    try compute_diff_bisect1(ArrA, ArrB, array:size(ArrA), array:size(ArrB)) of
-        no_overlap -> [{delete, A}, {insert, B}] 
+    A32 = unicode:characters_to_binary(A, utf8, utf32),
+    B32 = unicode:characters_to_binary(B, utf8, utf32),
+    M = byte_size(A32) div 4,
+    N = byte_size(B32) div 4,
+    try compute_diff_bisect1(A32, B32, M, N) of
+        no_overlap -> [{delete, A}, {insert, B}]
     catch
-        throw:{overlap, A1, B1, X, Y} ->
-            diff_bisect_split(A1, B1, X, Y)
+        throw:{overlap, X, Y} ->
+            diff_bisect_split(A, B, A32, B32, X, Y)
     end.
 
 compute_diff_bisect1(A, B, M, N) ->
@@ -441,7 +443,7 @@ compute_diff_bisect1(A, B, M, N) ->
                                     if 
                                         X1_1 >= X2 ->
                                             % Overlap detected
-                                            throw({overlap, A, B, X1_1, Y1_1});
+                                            throw({overlap, X1_1, Y1_1});
                                         true ->
                                             {continue, S2_1}
                                     end;
@@ -491,7 +493,7 @@ compute_diff_bisect1(A, B, M, N) ->
                                         % Mirror x2 onto top-left coordinate system.
                                         X1 >= M - X2_1 ->
                                             % Overlap detected
-                                            throw({overlap, A, B, X1, Y1});
+                                            throw({overlap, X1, Y1});
                                         true ->
                                             {continue, S4_1}
                                     end;
@@ -507,12 +509,12 @@ compute_diff_bisect1(A, B, M, N) ->
     no_overlap.
 
 % @doc Split A and B and process the parts.
-diff_bisect_split(A, B, X, Y) ->
-    A1 = binary_from_array(0, X, A),
-    A2 = binary_from_array(0, Y, B),
+diff_bisect_split(A, B, A32, B32, X, Y) ->
+    A1 = utf32_prefix_to_utf8(A32, X),
+    A2 = utf32_prefix_to_utf8(B32, Y),
 
-    B1 = binary_from_array(X, array:size(A), A),
-    B2 = binary_from_array(Y, array:size(B), B),
+    B1 = binary:part(A, byte_size(A1), byte_size(A) - byte_size(A1)),
+    B2 = binary:part(B, byte_size(A2), byte_size(B) - byte_size(A2)),
 
     Diffs = diff(A1, A2, false),
     DiffsB = diff(B1, B2, false),
@@ -540,26 +542,11 @@ pretty_html([{Op, Data}|T], Acc) ->
 
 % @doc Compute the source text from a list of diffs.
 source_text(Diffs) ->
-    source_text(Diffs, <<>>).
-
-source_text([], Acc) ->
-    Acc;
-source_text([{insert, _Data}|T], Acc) ->
-    source_text(T, Acc);
-source_text([{_Op, Data}|T], Acc) ->
-    source_text(T, <<Acc/binary, Data/binary>>).
-    
+    iolist_to_binary([Data || {Op, Data} <- Diffs, Op =/= insert]).
 
 % @doc Compute the destination text from a list of diffs.
 destination_text(Diffs) ->
-    destination_text(Diffs, <<>>).
-    
-destination_text([], Acc) -> 
-    Acc;
-destination_text([{delete, _Data}|T], Acc) ->
-    destination_text(T, Acc);
-destination_text([{_Op, Data}|T], Acc) ->
-    destination_text(T, <<Acc/binary, Data/binary>>).
+    iolist_to_binary([Data || {Op, Data} <- Diffs, Op =/= delete]).
     
 % @doc Compute the Levenshtein distance, the number of inserted, deleted or substituted characters.
 levenshtein(Diffs) ->
@@ -1091,26 +1078,22 @@ is_suffix(A, B) ->
     size(A) =:= binary:longest_common_suffix([A, B]).
 
 %
-match_front(X1, Y1, A, M, B, N) when X1 < M andalso Y1 < N ->
-    case array:get(X1, A) =:= array:get(Y1, B) of
-        true -> 
-	    match_front(X1+1, Y1+1, A, M, B, N);
-        false -> 
-	    {X1, Y1}
-    end;
+match_front(X1, Y1, A32, M, B32, N) when X1 < M andalso Y1 < N ->
+    APart = binary:part(A32, X1 * 4, (M - X1) * 4),
+    BPart = binary:part(B32, Y1 * 4, (N - Y1) * 4),
+    Steps = binary:longest_common_prefix([APart, BPart]) div 4,
+    {X1 + Steps, Y1 + Steps};
 match_front(X1, Y1, _, _, _, _) ->
     {X1, Y1}.
 
 %
-match_reverse(X1, Y1, A, M, B, N) when X1 < M andalso Y1 < N ->
-    case array:get(M-X1-1, A) =:= array:get(N-Y1-1, B) of
-        true -> 
-	    match_reverse(X1+1, Y1+1, A, M, B, N);
-        false -> 
-	    {X1, Y1}
-    end;
-match_reverse(X1, Y1, _, _, _, _) ->
-    {X1, Y1}.
+match_reverse(X2, Y2, A32, M, B32, N) when X2 < M andalso Y2 < N ->
+    APart = binary:part(A32, 0, (M - X2) * 4),
+    BPart = binary:part(B32, 0, (N - Y2) * 4),
+    Steps = binary:longest_common_suffix([APart, BPart]) div 4,
+    {X2 + Steps, Y2 + Steps};
+match_reverse(X2, Y2, _, _, _, _) ->
+    {X2, Y2}.
 
 
 %% Implementation of the for statement
@@ -1175,22 +1158,13 @@ text_size(_, _) ->
     error(badarg).
 
 %%
-%% Array utilities
+%% UTF-32 utilities
 %%
 
-% @doc Create an array from a utf8 binary.
-array_from_binary(Bin) when is_binary(Bin) ->
-    array:from_list(unicode:characters_to_list(Bin, utf8)).
-
-% @doc Create a binary from an array containing unicode characters.
-binary_from_array(Start, End, Array) ->
-    binary_from_array(Start, End, Array, <<>>).
-    
-binary_from_array(N, End, Array, Acc) when N < End ->
-    C = array:get(N, Array),
-    binary_from_array(N+1, End, Array, <<Acc/binary, C/utf8>>);
-binary_from_array(_, _, _, Acc) ->
-    Acc.
+% @doc Convert the first N codepoints of a UTF-32BE binary to a UTF-8 binary.
+utf32_prefix_to_utf8(Utf32, CodepointCount) ->
+    Prefix32 = binary:part(Utf32, 0, CodepointCount * 4),
+    unicode:characters_to_binary(Prefix32, utf32, utf8).
 
 %% @doc Checks the trailing bytes for utf8 prefix bytes.
 repair_tail(<<>>) ->
@@ -1313,12 +1287,6 @@ for_test() ->
     ?assertEqual(0, for(0, 10, fun(I, _N) -> {break, I} end, undefined)),
     ok.
 
-array_test() ->
-    ?assertEqual(20, array:size(array_from_binary(<<"de apen eten bananen">>))),
-    ?assertEqual(<<"broodje aap">>, binary_from_array(0, 11, array_from_binary(<<"broodje aap">>))),
-    ?assertEqual(<<"aa">>, binary_from_array(0, 2, array_from_binary(<<"aap">>))),
-    ?assertEqual(<<"ap">>, binary_from_array(1, 3, array_from_binary(<<"aap">>))),
-    ok.
 
 diff_utf8_test() ->
     ?assertEqual([{equal, <<208,174, 208,189, 208,184, 208,186, 208,190, 208,180>>}], 

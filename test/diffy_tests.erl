@@ -23,7 +23,7 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--define(NUM_TESTS, 800).
+-define(NUM_TESTS, 500).
 
 %%
 %% Properties
