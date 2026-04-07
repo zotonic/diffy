@@ -28,19 +28,19 @@
 %%
 
 prop_cleanup_merge() ->
-    ?FORALL(Diffs, diffy:diffs(),
+    ?FORALL(Diffs, list({diff_op(), proper_unicode:utf8()}),
         begin
             SourceText = diffy:source_text(Diffs),
             DestinationText = diffy:destination_text(Diffs),
 
             CleanDiffs = cleanup_merge(Diffs),
 
-            SourceText == diffy:source_text(CleanDiffs) andalso
-            DestinationText == diffy:destination_text(CleanDiffs)
+            SourceText == diffy:source_text(CleanDiffs)
+            andalso DestinationText == diffy:destination_text(CleanDiffs)
         end).
 
 prop_cleanup_efficiency() ->
-    ?FORALL(Diffs, diffy:diffs(),
+    ?FORALL(Diffs, list({diff_op(), proper_unicode:utf8()}),
         begin
             SourceText = diffy:source_text(Diffs),
             DestinationText = diffy:destination_text(Diffs),
@@ -49,6 +49,16 @@ prop_cleanup_efficiency() ->
 
             SourceText == diffy:source_text(EfficientDiffs) andalso
             DestinationText == diffy:destination_text(EfficientDiffs)
+        end).
+
+prop_cleanup_semantic() ->
+    ?FORALL(Diffs, list({diff_op(), proper_unicode:utf8()}),
+        begin
+            SourceText = diffy:source_text(Diffs),
+            DestinationText = diffy:destination_text(Diffs),
+            EfficientDiffs = cleanup_semantic(Diffs),
+            SourceText =:= diffy:source_text(EfficientDiffs) andalso
+            DestinationText =:= diffy:destination_text(EfficientDiffs)
         end).
 
 html_like() ->
@@ -240,6 +250,10 @@ cleanup_efficiency_prop_test() ->
     ?assertEqual(true, proper:quickcheck(prop_cleanup_efficiency(), [{numtests, 500}, {to_file, user}])),
     ok.
 
+cleanup_semantic_prop_test() ->
+    ?assertEqual(true, proper:quickcheck(prop_cleanup_semantic(), [{numtests, 500}, {to_file, user}])),
+    ok.
+
 random_diffs_prop_test() ->
     ?assertEqual(true, proper:quickcheck(prop_make_diff(), [{numtests, 500}, {to_file, user}])),
     ok.
@@ -279,7 +293,7 @@ text_size_test() ->
     ?assertEqual(4, diffy:text_size(<<1046/utf8, 1011/utf8, 1022/utf8, 127/utf8>>)),
 
     %% Bad utf-8 input results in a badarg.
-    ?assertError(badarg, diffy:text_size(<<149,157,112,8>>)),
+    ?assertError({badarg, _}, diffy:text_size(<<149,157,112,8>>)),
 
     ok.
 
@@ -324,6 +338,9 @@ diff_test() ->
 %%
 %% Helpers
 %%
+
+diff_op() ->
+    oneof([insert, delete, equal]).
 
 pretty_html(Diffs) ->
     iolist_to_binary(diffy:pretty_html(Diffs)).

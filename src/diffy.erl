@@ -53,7 +53,7 @@
 
 -type for_fun() :: fun((integer(), term()) -> {continue, term()} | {break, term()}).
 
--export_type([diffs/0]).
+-export_type([diff_op/0, diff/0, diffs/0]).
 
 -define(PATCH_MARGIN, 4).
 -define(PATCH_MAX_PATCH_LEN, 32).
@@ -388,7 +388,7 @@ diff_bisect(A, B) when is_binary(A) andalso is_binary(B) ->
 compute_diff_bisect1(A, B, M, N) ->
     %% TODO, add deadline... 
     
-    MaxD = int_ceil((M + N) / 2),
+    MaxD = ceil((M + N) / 2),
 
     VOffset = MaxD,
     VLength = 2 * MaxD,
@@ -1138,14 +1138,7 @@ common_suffix(Text1, Text2) ->
 
 % @doc Count the number of characters in a utf8 binary.
 text_size(Text) when is_binary(Text) ->
-    text_size(Text, 0).
-
-text_size(<<>>, Count) ->
-    Count;
-text_size(<<_C/utf8, Rest/binary>>, Count) ->
-    text_size(Rest, Count+1);
-text_size(_, _) ->
-    error(badarg).
+    string:length(Text).
 
 %%
 %% Array utilities
@@ -1153,12 +1146,7 @@ text_size(_, _) ->
 
 % @doc Create an array from a utf8 binary.
 array_from_binary(Bin) when is_binary(Bin) ->
-    array_from_binary(Bin, 0, array:new()).
-
-array_from_binary(<<>>, _N, Array) ->
-    array:fix(Array);
-array_from_binary(<<C/utf8, Rest/binary>>, N, Array) ->
-    array_from_binary(Rest, N+1, array:set(N, C, Array)).
+    array:from_list(unicode:characters_to_list(Bin, utf8)).
 
 % @doc Create a binary from an array containing unicode characters.
 binary_from_array(Start, End, Array) ->
@@ -1245,17 +1233,6 @@ repair_head(<<2#10:2, A:6, Rest/binary>>) ->
 repair_head(Bin) ->
     %% Illegal sequence, can't repair it.
     {<<>>, Bin}.
-
-
-%% This function can go away when we support OTP 20 and up.
-%%
-int_ceil(Number) ->
-    T = trunc(Number),
-    case (Number - T) of
-        Neg when Neg < 0 -> T;
-        Pos when Pos > 0 -> T + 1;
-        _ -> T
-    end.
 
 %%
 %% Tests
