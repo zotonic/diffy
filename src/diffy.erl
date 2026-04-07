@@ -284,7 +284,7 @@ diff_linemode(Text1, Text2) ->
     Diffs = diff(CharText1, CharText2, false),
 
     %% Transform the diffs back to lines.
-    Diffs1 = chars_to_lines(Diffs, Lines),
+    Diffs1 = decode_lines(Diffs, Lines),
 
     Cleaned = cleanup_merge(Diffs1),
     cleanup_line_diff(Cleaned, <<>>, <<>>, [], []).
@@ -351,16 +351,15 @@ insert_line(Line, Lines, Dict, NextChar) ->
             {NextChar, NextChar+1, [Line|Lines], dict:store(Line, NextChar, Dict)}
     end.
 
-%%
-chars_to_lines(Diffs, Lines) when is_list(Lines) ->
-    A = array:from_list(Lines),
-    chars_to_lines(Diffs, A, []).
+decode_lines(Diffs, Lines) when is_list(Lines) ->
+    LinesTuple = list_to_tuple(Lines),
+    decode_lines(Diffs, LinesTuple, []).
 
-chars_to_lines([], _A, Acc) ->
+decode_lines([], _LinesTuple, Acc) ->
     lists:reverse(Acc);
-chars_to_lines([{Op, Data}|Rest], LineArray, Acc) ->
-    Data1 = << <<(array:get(C, LineArray))/binary>> || <<C/utf8>> <= Data >>,
-    chars_to_lines(Rest, LineArray, [{Op, Data1}|Acc]).
+decode_lines([{Op, Data} | Rest], LinesTuple, Acc) ->
+    Data1 = << <<(element(C + 1, LinesTuple))/binary>> || <<C/utf8>> <= Data >>,
+    decode_lines(Rest, LinesTuple, [{Op, Data1} | Acc]).
 
 
 % Find the 'middle snake' of a diff, split the problem in two
@@ -797,15 +796,39 @@ cleanup_semantic_overlaps([], Acc) ->
 
 %% Helper functions for semantic cleanup
 
+%% @doc Convert N codepoints from the start of Bin to a byte offset.
+%% This is consistent with text_size/1 which counts codepoints (not grapheme clusters).
 overlap_to_bytes_start(Bin, N) ->
-    Prefix = string:slice(Bin, 0, N),
-    string:length(Prefix).
+    codepoints_to_bytes(Bin, N, 0).
 
+codepoints_to_bytes(_Bin, 0, Acc) ->
+    Acc;
+codepoints_to_bytes(<<C/utf8, Rest/binary>>, N, Acc) ->
+    codepoints_to_bytes(Rest, N - 1, Acc + byte_size(<<C/utf8>>));
+codepoints_to_bytes(<<_C, Rest/binary>>, N, Acc) ->
+    %% Invalid utf-8 byte, count as 1
+    codepoints_to_bytes(Rest, N - 1, Acc + 1);
+codepoints_to_bytes(<<>>, _N, Acc) ->
+    Acc.
+
+%% @doc Convert N codepoints from the END of Bin to a byte count of that suffix.
 overlap_to_bytes_end(Bin, N) ->
+    SkipChars = text_size(Bin) - N,
+    SkipBytes = codepoints_to_bytes(Bin, SkipChars, 0),
+    byte_size(Bin) - SkipBytes.
+
+substring_start(Bin, Len) ->
+    binary:part(Bin, 0, overlap_to_bytes_start(Bin, Len)).
+
+substring_end(Bin, Len) ->
     TotalLen = text_size(Bin),
-    Skip = TotalLen - N,
-    Rest = string:slice(Bin, Skip),
-    string:length(Rest).
+    case TotalLen =< Len of
+        true -> Bin;
+        false ->
+            SkipChars = TotalLen - Len,
+            SkipBytes = codepoints_to_bytes(Bin, SkipChars, 0),
+            binary:part(Bin, SkipBytes, byte_size(Bin) - SkipBytes)
+    end.
 
 common_overlap(<<>>, _) -> 0;
 common_overlap(_, <<>>) -> 0;
@@ -817,9 +840,9 @@ common_overlap(Text1, Text2) ->
         T1Len < T2Len -> {Text1, substring_start(Text2, T1Len), T1Len};
         true -> {Text1, Text2, T1Len}
     end,
-    if
-        T1 =:= T2 -> TMin;
-        true -> common_overlap_loop(T1, T2, TMin, 0, 1)
+    case T1 =:= T2 of
+        true -> TMin;
+        false -> common_overlap_loop(T1, T2, TMin, 0, 1)
     end.
 
 common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
@@ -846,24 +869,19 @@ common_overlap_loop(_T1, _T2, _TMin, Best, _Length) ->
 first_char(<<C/utf8, _/binary>>) -> C;
 first_char(_) -> undefined.
 
-last_char(Bin) ->
-    last_char(Bin, undefined).
-last_char(<<C/utf8, Rest/binary>>, _Last) -> last_char(Rest, C);
-last_char(<<>>, Last) -> Last.
+last_char(<<>>) -> undefined;
+last_char(Bin) when is_binary(Bin) ->
+    last_char(Bin, byte_size(Bin) - 1).
 
-substring_start(Bin, Len) ->
-    binary:part(Bin, 0, overlap_to_bytes_start(Bin, Len)).
-
-substring_end(Bin, Len) ->
-    TotalLen = text_size(Bin),
-    if
-        TotalLen =< Len -> Bin;
-        true -> 
-            SkipChars = TotalLen - Len,
-            SkipBytes = overlap_to_bytes_start(Bin, SkipChars),
-            binary:part(Bin, SkipBytes, size(Bin) - SkipBytes)
+last_char(Bin, Pos) ->
+    case binary:at(Bin, Pos) band 16#C0 of
+        16#80 ->
+            % continuation byte, keep scanning back
+            last_char(Bin, Pos - 1);
+        _ ->
+            <<_:Pos/binary, C/utf8, _/binary>> = Bin,
+            C
     end.
-
 
 is_non_alphanumeric(undefined) -> true;
 is_non_alphanumeric(C) ->
@@ -1147,7 +1165,6 @@ common_suffix(Text1, Text2) ->
 
 % @doc Count the number of characters in a utf8 binary.
 text_size(Text) when is_binary(Text) ->
-    % string:length(Text).
     text_size(Text, 0).
 
 text_size(<<>>, Count) ->
