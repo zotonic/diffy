@@ -239,12 +239,19 @@ cleanup_semantic_test() ->
         cleanup_semantic([{delete, <<"a">>}, {equal, <<"b">>}, {delete, <<"c">>}])),
 
     % Multiple eliminations.
-    ?assertEqual([{delete, <<"AB_AB">>}, {insert, <<"1A2_1A2">>}], 
-        cleanup_semantic([{insert, <<"1">>}, {equal, <<"A">>}, {delete, <<"B">>}, {insert, <<"2">>}, 
+    ?assertEqual([{delete, <<"AB_AB">>}, {insert, <<"1A2_1A2">>}],
+        cleanup_semantic([{insert, <<"1">>}, {equal, <<"A">>}, {delete, <<"B">>}, {insert, <<"2">>},
             {equal, <<"_">>}, {insert, <<"1">>}, {equal, <<"A">>}, {delete, <<"B">>}, {insert, <<"2">>}])),
 
-    ok.
+    % Regression test for UTF-8 data loss in cleanup_semantic_overlaps
+    % Ins1 = <<0,32,204,128,0,0>> (size 6, text_size 5)
+    % Ins2 = <<0,0,0,0,0,0,0,0>> (size 8, text_size 8)
+    % Total Dest size 14, text_size 13
+    Diffs = [{delete,<<0,0,0,0,0,0,0,0>>},{insert,<<0,32,204,128,0,0>>},{insert,<<0,0,0,0,0,0,0,0>>}],
+    Cleaned = cleanup_semantic(Diffs),
+    ?assertEqual(diffy:destination_text(Diffs), diffy:destination_text(Cleaned)),
 
+    ok.
 cleanup_efficiency_prop_test() ->
     ?assertEqual(true, proper:quickcheck(prop_cleanup_efficiency(), [{numtests, 800}, {to_file, user}])),
     ok.

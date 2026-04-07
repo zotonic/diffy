@@ -762,27 +762,31 @@ cleanup_semantic_overlaps([{delete, Del}, {insert, Ins} | T], Acc) ->
     Overlap2 = common_overlap(Ins, Del),
     if
         Overlap1 >= Overlap2 ->
-            TDel = text_size(Del),
-            TIns = text_size(Ins),
-            case Overlap1 >= TDel / 2 orelse Overlap1 >= TIns / 2 of
-                true ->
-                    Common = substring_start(Ins, Overlap1),
-                    NewDel = substring_start(Del, TDel - Overlap1),
-                    NewIns = skip_chars(Ins, Overlap1),
+            TDel = size(Del),
+            TIns = size(Ins),
+            Overlap1BytesDel = overlap_to_bytes_end(Del, Overlap1),
+            Overlap1BytesIns = overlap_to_bytes_start(Ins, Overlap1),
+            if
+                Overlap1BytesDel >= TDel / 2 orelse Overlap1BytesIns >= TIns / 2 ->
+                    Common = binary:part(Ins, 0, Overlap1BytesIns),
+                    NewDel = binary:part(Del, 0, TDel - Overlap1BytesDel),
+                    NewIns = binary:part(Ins, Overlap1BytesIns, TIns - Overlap1BytesIns),
                     cleanup_semantic_overlaps([{insert, NewIns} | T], [{equal, Common}, {delete, NewDel} | Acc]);
-                false ->
+                true ->
                     cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
             end;
         true ->
-            TDel = text_size(Del),
-            TIns = text_size(Ins),
-            case Overlap2 >= TDel / 2 orelse Overlap2 >= TIns / 2 of
-                true ->
-                    Common = substring_start(Del, Overlap2),
-                    NewIns = substring_start(Ins, TIns - Overlap2),
-                    NewDel = skip_chars(Del, Overlap2),
+            TDel = size(Del),
+            TIns = size(Ins),
+            Overlap2BytesIns = overlap_to_bytes_end(Ins, Overlap2),
+            Overlap2BytesDel = overlap_to_bytes_start(Del, Overlap2),
+            if
+                Overlap2BytesIns >= TIns / 2 orelse Overlap2BytesDel >= TDel / 2 ->
+                    Common = binary:part(Ins, TIns - Overlap2BytesIns, Overlap2BytesIns),
+                    NewIns = binary:part(Ins, 0, TIns - Overlap2BytesIns),
+                    NewDel = binary:part(Del, Overlap2BytesDel, TDel - Overlap2BytesDel),
                     cleanup_semantic_overlaps([{delete, NewDel} | T], [{equal, Common}, {insert, NewIns} | Acc]);
-                false ->
+                true ->
                     cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
             end
     end;
@@ -793,17 +797,28 @@ cleanup_semantic_overlaps([], Acc) ->
 
 %% Helper functions for semantic cleanup
 
+overlap_to_bytes_start(_Bin, 0) -> 0;
+overlap_to_bytes_start(<<C/utf8, Rest/binary>>, N) ->
+    size(<<C/utf8>>) + overlap_to_bytes_start(Rest, N - 1).
+
+overlap_to_bytes_end(Bin, N) ->
+    Skip = text_size(Bin) - N,
+    skip_n_chars(Bin, Skip).
+
+skip_n_chars(Rest, 0) -> size(Rest);
+skip_n_chars(<<_/utf8, Rest/binary>>, N) ->
+    skip_n_chars(Rest, N - 1).
+
 common_overlap(<<>>, _) -> 0;
 common_overlap(_, <<>>) -> 0;
 common_overlap(Text1, Text2) ->
     T1Len = text_size(Text1),
     T2Len = text_size(Text2),
-    {T1, T2} = if
-        T1Len > T2Len -> {substring_end(Text1, T2Len), Text2};
-        T1Len < T2Len -> {Text1, substring_start(Text2, T1Len)};
-        true -> {Text1, Text2}
+    {T1, T2, TMin} = if
+        T1Len > T2Len -> {substring_end(Text1, T2Len), Text2, T2Len};
+        T1Len < T2Len -> {Text1, substring_start(Text2, T1Len), T1Len};
+        true -> {Text1, Text2, T1Len}
     end,
-    TMin = min(T1Len, T2Len),
     if
         T1 =:= T2 -> TMin;
         true -> common_overlap_loop(T1, T2, TMin, 0, 1)
@@ -839,22 +854,18 @@ last_char(<<C/utf8, Rest/binary>>, _Last) -> last_char(Rest, C);
 last_char(<<>>, Last) -> Last.
 
 substring_start(Bin, Len) ->
-    substring_start(Bin, Len, <<>>).
-substring_start(_, 0, Acc) -> Acc;
-substring_start(<<C/utf8, Rest/binary>>, Len, Acc) ->
-    substring_start(Rest, Len - 1, <<Acc/binary, C/utf8>>);
-substring_start(<<>>, _, Acc) -> Acc.
+    binary:part(Bin, 0, overlap_to_bytes_start(Bin, Len)).
 
 substring_end(Bin, Len) ->
     TotalLen = text_size(Bin),
     if
         TotalLen =< Len -> Bin;
-        true -> skip_chars(Bin, TotalLen - Len)
+        true -> 
+            SkipChars = TotalLen - Len,
+            SkipBytes = overlap_to_bytes_start(Bin, SkipChars),
+            binary:part(Bin, SkipBytes, size(Bin) - SkipBytes)
     end.
 
-skip_chars(Bin, 0) -> Bin;
-skip_chars(<<_/utf8, Rest/binary>>, N) -> skip_chars(Rest, N - 1);
-skip_chars(<<>>, _) -> <<>>.
 
 is_non_alphanumeric(undefined) -> true;
 is_non_alphanumeric(C) ->
