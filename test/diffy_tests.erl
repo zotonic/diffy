@@ -23,6 +23,14 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-dialyzer({no_opaque, [
+    cleanup_merge_prop_test/0,
+    cleanup_efficiency_prop_test/0,
+    cleanup_semantic_prop_test/0,
+    random_inner_diff_prop_test/0,
+    random_diffs_prop_test/0
+]}).
+
 -define(NUM_TESTS, 500).
 
 %%
