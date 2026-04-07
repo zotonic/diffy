@@ -1,9 +1,9 @@
 %% @author Maas-Maarten Zeeman <mmzeeman@xs4all.nl>
-%% @copyright 2014-2019 Maas-Maarten Zeeman
+%% @copyright 2014-2026 Maas-Maarten Zeeman
 %%
 %% @doc Diffy, an erlang diff match and patch implementation 
 %%
-%% Copyright 2014-2019 Maas-Maarten Zeeman
+%% Copyright 2014-2026 Maas-Maarten Zeeman
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -799,13 +799,13 @@ cleanup_semantic_overlaps([], Acc) ->
 
 overlap_to_bytes_start(Bin, N) ->
     Prefix = string:slice(Bin, 0, N),
-    size(Prefix).
+    string:length(Prefix).
 
 overlap_to_bytes_end(Bin, N) ->
     TotalLen = text_size(Bin),
     Skip = TotalLen - N,
     Rest = string:slice(Bin, Skip),
-    size(Rest).
+    string:length(Rest).
 
 common_overlap(<<>>, _) -> 0;
 common_overlap(_, <<>>) -> 0;
@@ -829,10 +829,10 @@ common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
         {FoundByteOffset, _} ->
             FoundCharCount = text_size(binary:part(T2, 0, FoundByteOffset)),
             NewLength = Length + FoundCharCount,
-            case NewLength > TMin of
-                true -> Best;
-                false ->
-                    case FoundCharCount =:= 0 orelse substring_end(T1, NewLength) =:= substring_start(T2, NewLength) of
+            if
+                NewLength > TMin -> Best;
+                true ->
+                    case substring_end(T1, NewLength) =:= substring_start(T2, NewLength) of
                         true ->
                             common_overlap_loop(T1, T2, TMin, NewLength, NewLength + 1);
                         false ->
@@ -1147,7 +1147,15 @@ common_suffix(Text1, Text2) ->
 
 % @doc Count the number of characters in a utf8 binary.
 text_size(Text) when is_binary(Text) ->
-    string:length(Text).
+    % string:length(Text).
+    text_size(Text, 0).
+
+text_size(<<>>, Count) ->
+    Count;
+text_size(<<_C/utf8, Rest/binary>>, Count) ->
+    text_size(Rest, Count+1);
+text_size(_, _) ->
+    error(badarg).
 
 %%
 %% Array utilities
