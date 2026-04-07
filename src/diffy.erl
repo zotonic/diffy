@@ -797,17 +797,15 @@ cleanup_semantic_overlaps([], Acc) ->
 
 %% Helper functions for semantic cleanup
 
-overlap_to_bytes_start(_Bin, 0) -> 0;
-overlap_to_bytes_start(<<C/utf8, Rest/binary>>, N) ->
-    size(<<C/utf8>>) + overlap_to_bytes_start(Rest, N - 1).
+overlap_to_bytes_start(Bin, N) ->
+    Prefix = string:slice(Bin, 0, N),
+    size(Prefix).
 
 overlap_to_bytes_end(Bin, N) ->
-    Skip = text_size(Bin) - N,
-    skip_n_chars(Bin, Skip).
-
-skip_n_chars(Rest, 0) -> size(Rest);
-skip_n_chars(<<_/utf8, Rest/binary>>, N) ->
-    skip_n_chars(Rest, N - 1).
+    TotalLen = text_size(Bin),
+    Skip = TotalLen - N,
+    Rest = string:slice(Bin, Skip),
+    size(Rest).
 
 common_overlap(<<>>, _) -> 0;
 common_overlap(_, <<>>) -> 0;

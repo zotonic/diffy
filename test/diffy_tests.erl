@@ -23,6 +23,8 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-define(NUM_TESTS, 800).
+
 %%
 %% Properties
 %%
@@ -219,7 +221,7 @@ cleanup_merge_test() ->
     ok.
 
 cleanup_merge_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_cleanup_merge(), [{numtests, 500}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_cleanup_merge(), [{numtests, ?NUM_TESTS}, {to_file, user}])),
     ok.
 
 cleanup_semantic_test() ->
@@ -253,19 +255,19 @@ cleanup_semantic_test() ->
 
     ok.
 cleanup_efficiency_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_cleanup_efficiency(), [{numtests, 800}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_cleanup_efficiency(), [{numtests, ?NUM_TESTS}, {to_file, user}])),
     ok.
 
 cleanup_semantic_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_cleanup_semantic(), [{numtests, 800}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_cleanup_semantic(), [{numtests, ?NUM_TESTS}, {to_file, user}])),
     ok.
 
 random_diffs_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_make_diff(), [{numtests, 800}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_make_diff(), [{numtests, ?NUM_TESTS}, {to_file, user}])),
     ok.
 
 random_inner_diff_prop_test() ->
-    ?assertEqual(true, proper:quickcheck(prop_inner_diff(), [{numtests, 800}, {to_file, user}])),
+    ?assertEqual(true, proper:quickcheck(prop_inner_diff(), [{numtests, ?NUM_TESTS}, {to_file, user}])),
     ok.
 
 cleanup_efficiency_test() ->
