@@ -142,8 +142,13 @@ pretty_html_test() ->
     ?assertEqual(<<"<span>test</span>">>, pretty_html([{equal, <<"test">>}])),
     ?assertEqual(<<"<del style='background:#ffe6e6;'>foo</del><span>test</span>">>, 
         pretty_html([{delete, <<"foo">>}, {equal, <<"test">>}])),
+
     ?assertEqual(<<"<ins style='background:#e6ffe6;'>foo</ins><span>test</span>">>, 
         pretty_html([{insert, <<"foo">>}, {equal, <<"test">>}])),
+
+    %% escaping.
+    ?assertEqual(<<"<ins style='background:#e6ffe6;'>&lt;span&gt;foo&lt;/span&gt;</ins><span>&amp; &lt; &gt; &quot; &#39;</span>">>, 
+        pretty_html([{insert, <<"<span>foo</span>">>}, {equal, <<"& < > \" '">>}])),
     ok.
 
 source_text_test() ->

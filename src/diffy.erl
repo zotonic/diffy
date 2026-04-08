@@ -525,23 +525,33 @@ diff_bisect_split(A, B, A32, B32, X, Y) ->
     Diffs ++ DiffsB.
 
 % @doc Convert the diffs into a pretty html report
--spec pretty_html(diffs()) -> iolist().
 pretty_html(Diffs) ->
     pretty_html(Diffs, []).
 
 pretty_html([], Acc) ->
     lists:reverse(Acc);
-pretty_html([{Op, Data}|T], Acc) ->
-    Text = z_html:escape(Data),
+pretty_html([{Op, Data} | T], Acc) ->
+    Safe = html_escape(Data),
     HTML = case Op of
         insert ->
-            [<<"<ins style='background:#e6ffe6;'>">>, Text, <<"</ins>">>];
+            [<<"<ins style='background:#e6ffe6;'>">>, Safe, <<"</ins>">>];
         delete ->
-            [<<"<del style='background:#ffe6e6;'>">>, Text, <<"</del>">>];
+            [<<"<del style='background:#ffe6e6;'>">>, Safe, <<"</del>">>];
         equal ->
-            [<<"<span>">>, Text, <<"</span>">>]
+            [<<"<span>">>, Safe, <<"</span>">>]
     end,
-    pretty_html(T, [HTML|Acc]).
+    pretty_html(T, [HTML | Acc]).
+
+html_escape(B) when is_binary(B) ->
+    binary:replace(B,
+                   [<<"&">>, <<"<">>, <<">">>, <<"\"">>, <<"'">>],
+                   fun (<<"&">>)   -> <<"&amp;">>;
+                       (<<"<">>)   -> <<"&lt;">>;
+                       (<<">">>)   -> <<"&gt;">>;
+                       (<<"\"">>)  -> <<"&quot;">>;
+                       (<<"'">>)   -> <<"&#39;">>
+                   end,
+                   [global]).
 
 % @doc Compute the source text from a list of diffs.
 source_text(Diffs) ->

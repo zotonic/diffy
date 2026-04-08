@@ -2,7 +2,7 @@
     {description, "Diff, match patch implementation"},
     {vsn, "git"},
     {registered, []},
-    {applications, [kernel, stdlib, zotonic_stdlib]},
+    {applications, [kernel, stdlib]},
     {env, []},
     {maintainers, ["Maas-Maarten Zeeman", "Zotonic Team"]},
     {licenses, ["Apache 2.0"]},
