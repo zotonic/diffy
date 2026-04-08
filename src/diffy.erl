@@ -542,6 +542,7 @@ pretty_html([{Op, Data} | T], Acc) ->
     end,
     pretty_html(T, [HTML | Acc]).
 
+-if(?OTP_RELEASE >= 27).
 html_escape(B) when is_binary(B) ->
     binary:replace(B,
                    [<<"&">>, <<"<">>, <<">">>, <<"\"">>, <<"'">>],
@@ -552,7 +553,23 @@ html_escape(B) when is_binary(B) ->
                        (<<"'">>)   -> <<"&#39;">>
                    end,
                    [global]).
+-else.
+html_escape(B) when is_binary(B) ->
+    lists:foldl(fun({From, To}, Acc) ->
+                        binary:replace(Acc, From, To, [global])
+                end,
+                B,
+                [
+                 {<<"&">>,  <<"&amp;">>},
+                 {<<"<">>,  <<"&lt;">>},
+                 {<<">">>,  <<"&gt;">>},
+                 {<<"\"">>, <<"&quot;">>},
+                 {<<"'">>,  <<"&#39;">>}
+                ]).
+-endif.
 
+
+% Above function can be replaced with this when OTP 27 is the lowest supported 
 % @doc Compute the source text from a list of diffs.
 source_text(Diffs) ->
     iolist_to_binary([Data || {Op, Data} <- Diffs, Op =/= insert]).
