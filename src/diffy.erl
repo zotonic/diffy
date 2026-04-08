@@ -2,6 +2,7 @@
 %% @copyright 2014-2026 Maas-Maarten Zeeman
 %%
 %% @doc Diffy, an erlang diff match and patch implementation 
+%% @end
 %%
 %% Copyright 2014-2026 Maas-Maarten Zeeman
 %%
