@@ -77,7 +77,7 @@ html_like() ->
                                         {2, utf8(4)},              % Some small portions of unicode chars.
                                         {2, range($0, $9)},        % numbers
                                         {2, $\s},                  % whitespace
-                                        {4,  $\n},                 % linebreaks
+                                        {4, $\n},                 % linebreaks
                                         {2, oneof([$., $-, $!, $?, $,])}   % punctuation
                                        ]))).
 
@@ -314,7 +314,7 @@ text_size_test() ->
     ?assertEqual(4, diffy:text_size(<<1046/utf8, 1011/utf8, 1022/utf8, 127/utf8>>)),
 
     %% Bad utf-8 input results in a badarg.
-    ?assertError(badarg, diffy:text_size(<<149,157,112,8>>)),
+    ?assertError({badarg, _}, diffy:text_size(<<149,157,112,8>>)),
 
     ok.
 
@@ -354,6 +354,101 @@ diff_test() ->
                  diffy:diff(<<"cat ">>,
                             <<"cat mouse dog ">>)),
     ok.
+
+  
+diff_linemode_corners_test() ->
+    %% Empty inputs.
+    ?assertEqual([], diffy:diff_linemode(<<>>, <<>>)),
+    ?assertEqual([{insert, <<"hello\n">>}], diffy:diff_linemode(<<>>, <<"hello\n">>)),
+    ?assertEqual([{delete, <<"hello\n">>}], diffy:diff_linemode(<<"hello\n">>, <<>>)),
+
+    %% Identical input — single equal op.
+    ?assertEqual([{equal, <<"hello\nworld\n">>}],
+        diffy:diff_linemode(<<"hello\nworld\n">>, <<"hello\nworld\n">>)),
+
+    %% No newline at end of file — last line treated as its own token.
+    ?assertEqual(
+        [{equal, <<"hello\n">>}, {delete, <<"world">>}, {insert, <<"maas">>}],
+        diffy:diff_linemode(<<"hello\nworld">>, <<"hello\nmaas">>)),
+
+    %% Blank lines — exercise is_blankline_start/end and the \n\n pattern.
+    %% The rediff within cleanup_line_diff splits b\n vs c\n at character level.
+    ?assertEqual(
+        [{equal, <<"a\n\n">>}, {delete, <<"b">>}, {insert, <<"c">>}, {equal, <<"\nd\n">>}],
+        diffy:diff_linemode(<<"a\n\nb\nd\n">>, <<"a\n\nc\nd\n">>)),
+
+    %% \r\n line endings — exercises the \r\n\r\n blankline pattern.
+    ?assertEqual(
+        [{equal, <<"hello\r\n">>}, {delete, <<"world\r\n">>}, {insert, <<"maas\r\n">>}],
+        diffy:diff_linemode(<<"hello\r\nworld\r\n">>, <<"hello\r\nmaas\r\n">>)),
+
+    %% Repeated lines — the same line appearing multiple times should reuse the same index.
+    ?assertEqual(
+        [{equal, <<"a\nb\na\n">>}, {insert, <<"b\n">>}],
+        diffy:diff_linemode(<<"a\nb\na\n">>, <<"a\nb\na\nb\n">>)),
+
+    %% Large enough to trigger linemode via compute_diff1 size threshold.
+    %% Build two texts that differ only in one line buried in > 100 chars of context.
+    Prefix = binary:copy(<<"padding line\n">>, 10),
+    Suffix = binary:copy(<<"trailing line\n">>, 10),
+    Text1 = <<Prefix/binary, "old line\n", Suffix/binary>>,
+    Text2 = <<Prefix/binary, "new line\n", Suffix/binary>>,
+    Diffs = diffy:diff(Text1, Text2),
+    %% Source and destination text must be preserved exactly.
+    ?assertEqual(Text1, diffy:source_text(Diffs)),
+    ?assertEqual(Text2, diffy:destination_text(Diffs)),
+    %% Must contain at least one delete and one insert — the changed line.
+    ?assert(lists:any(fun({delete, _}) -> true; (_) -> false end, Diffs)),
+    ?assert(lists:any(fun({insert, _}) -> true; (_) -> false end, Diffs)),
+
+    %% Multi-byte UTF-8 lines — verify encoding survives the linemode round-trip.
+    ?assertEqual(
+        [{equal, <<"héllo\n"/utf8>>}, {delete, <<"wörld\n"/utf8>>}, {insert, <<"wörlt\n"/utf8>>}],
+        diffy:diff_linemode(<<"héllo\nwörld\n"/utf8>>, <<"héllo\nwörlt\n"/utf8>>)),
+
+    %% cleanup_line_diff rediff path — two changed lines adjacent to an equal trigger
+    %% the rediff of accumulated delete+insert data.
+    T1 = <<"aaa\nbbb\nccc\n">>,
+    T2 = <<"aab\nbbc\nccc\n">>,
+    RediffDiffs = diffy:diff_linemode(T1, T2),
+    ?assertEqual(T1, diffy:source_text(RediffDiffs)),
+    ?assertEqual(T2, diffy:destination_text(RediffDiffs)),
+
+    ok.
+
+diff_options_test() ->
+    A = <<"one two x four five">>,
+    B = <<"one TWO x FOUR five">>,
+
+    %% No options — same as diff/2.
+    ?assertEqual(diffy:diff(A, B), diffy:diff(A, B, [])),
+
+    %% no_linemode: result is structurally equivalent (same source/dest text).
+    NoLinemode = diffy:diff(A, B, [no_linemode]),
+    ?assertEqual(diffy:source_text(diffy:diff(A, B)), diffy:source_text(NoLinemode)),
+    ?assertEqual(diffy:destination_text(diffy:diff(A, B)), diffy:destination_text(NoLinemode)),
+
+    %% semantic option applies cleanup_semantic to the raw diff.
+    ?assertEqual(diffy:cleanup_semantic(diffy:diff(A, B)), diffy:diff(A, B, [semantic])),
+
+    %% efficiency option applies cleanup_efficiency to the raw diff.
+    ?assertEqual(diffy:cleanup_efficiency(diffy:diff(A, B)), diffy:diff(A, B, [efficiency])),
+
+    %% {efficiency, Cost} applies cleanup_efficiency/2 with the given cost.
+    ?assertEqual(diffy:cleanup_efficiency(diffy:diff(A, B), 2), diffy:diff(A, B, [{efficiency, 2}])),
+
+    %% Both: semantic first, then efficiency.
+    ?assertEqual(
+        diffy:cleanup_efficiency(diffy:cleanup_semantic(diffy:diff(A, B))),
+        diffy:diff(A, B, [semantic, efficiency])),
+
+    %% Order of options in list does not affect cleanup order.
+    ?assertEqual(
+        diffy:diff(A, B, [semantic, efficiency]),
+        diffy:diff(A, B, [efficiency, semantic])),
+
+    ok.
+
 
 
 %%

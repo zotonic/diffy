@@ -23,6 +23,7 @@
 
 -export([
     diff/2,
+    diff/3,
     diff_bisect/2,
     diff_linemode/2,
 
@@ -52,16 +53,19 @@
 -type diff() :: {diff_op(), unicode:unicode_binary()}.
 -type diffs() :: list(diff()).
 
+-type diff_option() ::
+    semantic |
+    efficiency |
+    {efficiency, EditCost :: pos_integer()} |
+    no_linemode.
+
 -type for_fun() :: fun((integer(), term()) -> {continue, term()} | {break, term()}).
 
--export_type([diff_op/0, diff/0, diffs/0]).
+-export_type([diff_op/0, diff/0, diffs/0, diff_option/0]).
 
 -define(PATCH_MARGIN, 4).
--define(PATCH_MAX_PATCH_LEN, 32).
-
--define(MATCH_MAXBITS, 31).
-
 -define(IS_INS_OR_DEL(Op), (Op =:= insert orelse Op =:= delete)).
+-define(PHASH2_RANGE, (1 bsl 32)).
 
 -record(bisect_state, {
     k1start = 0, k1end = 0,
@@ -82,34 +86,72 @@
 
 -dialyzer({no_match, for/5}).
 
-% @doc Compute the difference between two binary texts
-%
+% @doc Compute the difference between two binary texts.
 -spec diff(unicode:unicode_binary(), unicode:unicode_binary()) -> diffs().
 diff(Text1, Text2) ->
-    diff(Text1, Text2, true).
+    diff(Text1, Text2, []).
 
-diff(<<>>, <<>>, _CheckLines) ->
+% @doc Compute the difference between two binary texts with options.
+%
+% Options:
+%   semantic             - run cleanup_semantic/1 on the result
+%   efficiency           - run cleanup_efficiency/1 on the result (default edit cost 4)
+%   {efficiency, Cost}   - run cleanup_efficiency/2 with a custom edit cost
+%   no_linemode          - disable the linemode optimization for large texts
+%
+% Cleanups are always applied in the correct order: semantic first, then efficiency.
+-spec diff(unicode:unicode_binary(), unicode:unicode_binary(), [diff_option()]) -> diffs().
+diff(Text1, Text2, Options) when is_list(Options) ->
+    CheckLines = not lists:member(no_linemode, Options),
+    T1 = to_utf32(Text1),
+    T2 = to_utf32(Text2),
+    Diffs32 = diff32(T1, T2, CheckLines),
+    Diffs1 = case lists:member(semantic, Options) of
+        true  -> cleanup_semantic32(Diffs32);
+        false -> Diffs32
+    end,
+    Diffs2 = case efficiency_opt(Options) of
+        none           -> Diffs1;
+        default        -> cleanup_efficiency32(Diffs1);
+        {custom, Cost} -> cleanup_efficiency32(Diffs1, Cost)
+    end,
+    %% Single conversion at the exit boundary.
+    [{Op, to_utf8(D)} || {Op, D} <- Diffs2].
+
+%% Extract the efficiency option, preferring {efficiency, Cost} over plain efficiency.
+efficiency_opt(Options) ->
+    case lists:keyfind(efficiency, 1, Options) of
+        {efficiency, Cost} -> {custom, Cost};
+        false ->
+            case lists:member(efficiency, Options) of
+                true  -> default;
+                false -> none
+            end
+    end.
+
+%% Internal diff working entirely in UTF-32 binaries.
+diff32(<<>>, <<>>, _CheckLines) ->
     [];
-diff(Text1, Text2, _CheckLines) when Text1 =:= Text2 ->
+diff32(Text1, Text2, _CheckLines) when Text1 =:= Text2 ->
     [{equal, Text1}];
-diff(Text1, Text2, CheckLines) ->
+diff32(Text1, Text2, CheckLines) ->
     {Prefix, MText1, MText2, Suffix} = split_pre_and_suffix(Text1, Text2),
 
     Diffs = compute_diff(MText1, MText2, CheckLines),
 
     Diffs1 = case Suffix of
-        <<>> -> Diffs;
-        _ -> Diffs ++ [{equal, Suffix}]
-    end,
+                 <<>> -> Diffs;
+                 _ -> Diffs ++ [{equal, Suffix}]
+             end,
 
-    Diffs2 = case Prefix of 
-        <<>> -> Diffs1;
-        _ -> [{equal, Prefix} | Diffs1]
-    end,
+    Diffs2 = case Prefix of
+                 <<>> -> Diffs1;
+                 _ -> [{equal, Prefix} | Diffs1]
+             end,
 
-    cleanup_merge(Diffs2).
+    cleanup_merge32(Diffs2).
 
-%% This assumes Text1 and Text2 don't have a common prefix
+%% This assumes Text1 and Text2 don't have a common prefix. Operates on UTF-32.
 compute_diff(<<>>, NewText, _CheckLines) ->
     [{insert, NewText}];
 compute_diff(OldText, <<>>, _CheckLines) ->
@@ -118,22 +160,23 @@ compute_diff(OldText, NewText, CheckLines) ->
     OldStNew = size(OldText) < size(NewText),
 
     {ShortText, LongText} = case OldStNew of
-        true -> {OldText, NewText};
-        false -> {NewText, OldText}
-    end,
+                                true -> {OldText, NewText};
+                                false -> {NewText, OldText}
+                            end,
 
     case binary:match(LongText, ShortText) of
         {Start, Length} ->
             <<Pre:Start/binary, _:Length/binary, Suf/binary>> = LongText,
             Op = diff_op(OldStNew),
-            [{Op, Pre}, {equal, ShortText}, {Op, Suf}]; 
+            [{Op, Pre}, {equal, ShortText}, {Op, Suf}];
         nomatch ->
-            case single_char(ShortText) of
+            %% In UTF-32, a single codepoint is exactly 4 bytes.
+            case size(ShortText) =:= 4 of
                 true ->
                     [{delete, OldText}, {insert, NewText}];
                 false ->
                     try_half_match(OldText, NewText, CheckLines)
-             end
+            end
     end.
 
 diff_op(true) -> insert;
@@ -143,14 +186,15 @@ diff_op(false) -> delete.
 try_half_match(OldText, NewText, CheckLines) ->
     case half_match(OldText, NewText) of
         {half_match, A1, A2, B1, B2, Common} ->
-            Diffs1 = diff(A1, B1, CheckLines),
-            Diffs2 = diff(A2, B2, CheckLines),
+            Diffs1 = diff32(A1, B1, CheckLines),
+            Diffs2 = diff32(A2, B2, CheckLines),
             Diffs1 ++ [{equal, Common} | Diffs2];
         undefined ->
             compute_diff1(OldText, NewText, CheckLines)
     end.
 
 %% Check if we can do a half-match diff, returns undefined if it is not advantageous.
+%% Operates on UTF-32 binaries — size comparisons are in bytes (4 bytes per codepoint).
 half_match(A, B) ->
     AGtB = size(A) > size(B),
     {Short, Long} = case AGtB of
@@ -158,28 +202,28 @@ half_match(A, B) ->
         false -> {A, B}
     end,
 
-    case text_smaller_than(Long, 4) orelse size(Short) * 2 < size(Long) of
+    %% text_smaller_than(Long, 4) becomes size(Long) < 4*4 in UTF-32.
+    case size(Long) < 16 orelse size(Short) * 2 < size(Long) of
         true ->
             %% No point in looking.
             undefined;
         false ->
-            %% Note: this could split through a utf8 byte sequence.
             Hm1 = half_match_i(Long, Short, (size(Long) + 3) div 4),
             Hm2 = half_match_i(Long, Short, (size(Long) + 1) div 2),
 
             %% Select the longest half-match.
             Hm = case {Hm1, Hm2} of
-                {undefined, undefined} -> 
-                    undefined;
-                {undefined, _} -> 
-                    Hm2;
-                {_, undefined} -> 
-                    Hm1;
-                {{half_match, _, _, _, _, C1}, {half_match, _, _, _, _, C2}} when size(C1) > size(C2) ->
-                    Hm1;
-                {_, _} ->
-                    Hm2
-            end,
+                     {undefined, undefined} -> 
+                         undefined;
+                     {undefined, _} -> 
+                         Hm2;
+                     {_, undefined} -> 
+                         Hm1;
+                     {{half_match, _, _, _, _, C1}, {half_match, _, _, _, _, C2}} when size(C1) > size(C2) ->
+                         Hm1;
+                     {_, _} ->
+                         Hm2
+                 end,
 
             %% Swap values if A was smaller than B
             case Hm of
@@ -193,18 +237,13 @@ half_match(A, B) ->
             end
     end.
 
-
 % Find the best common overlap at location I.
 half_match_i(Long, Short, I) ->
     {NewI, Seed} = seed(Long, I),
     case Seed of
-        <<>> -> 
-            undefined;
-        _ ->
-            best_common(Long, Short, Seed, NewI, 0, 
-                undefined, undefined, undefined, undefined, <<>>) 
+        <<>> -> undefined;
+        _ -> best_common(Long, Short, Seed, NewI, 0, <<>>, <<>>, <<>>, <<>>, <<>>) 
     end.
-
 
 %% Find the best common overlap inside two texts.
 best_common(Long, Short, Seed, SeedLoc, Start, 
@@ -251,45 +290,49 @@ best_common(Long, Short, Seed, SeedLoc, Start,
             end
     end.
 
-%% @doc Return the position of the next character.
-next_char(Bin, Pos) ->
-    <<_:Pos/binary, C/utf8, _Rest/binary>> = Bin,
-    %% The next char is at binary position...
-    Pos + size(<<C/utf8>>). 
+%% @doc Return the byte position of the next codepoint in a UTF-32 binary.
+next_char(_Bin, Pos) ->
+    Pos + 4.
 
-%% 
+%%
+%% In UTF-32 every codepoint is exactly 4 bytes, so any 4-byte-aligned slice
+%% is a valid codepoint boundary — no repair_head/repair_tail needed.
 seed(Long, Start) ->
     SeedSize = size(Long) div 4,
 
-    %% Note, need to split on utf8 character boundary here.
-    <<_Pre:Start/binary, Seed:SeedSize/binary, _Post/binary>> = Long,
+    %% Align Start to a 4-byte (codepoint) boundary.
+    AlignedStart = (Start div 4) * 4,
+    <<_Pre:AlignedStart/binary, Seed:SeedSize/binary, _Post/binary>> = Long,
 
-    %% Utf-8 repair the seed's head and tail. 
-    {Pre, Seed1} = repair_head(Seed),
-    {Seed2, _} = repair_tail(Seed1),
-
-    %% return the start position of the seed and the seed itself.
-    {Start - size(Pre), Seed2}.
+    {AlignedStart, Seed}.
 
 
 %% Line diff
 compute_diff1(Text1, Text2, true) ->
-    diff_linemode(Text1, Text2);
-compute_diff1(Text1, Text2, false) when size(Text1) > 100 orelse size(Text2) > 100 ->
-    diff_linemode(Text1, Text2);
+    diff_linemode32(Text1, Text2);
+compute_diff1(Text1, Text2, false) when size(Text1) > 400 orelse size(Text2) > 400 ->
+    %% 100 UTF-8 bytes ≈ 400 UTF-32 bytes (conservative upper bound)
+    diff_linemode32(Text1, Text2);
 compute_diff1(Text1, Text2, false) ->
-    diff_bisect(Text1, Text2).
+    diff_bisect32(Text1, Text2).
 
 
-%% Compute diff in linemode
+%% Public entry: accepts UTF-8, converts at boundary.
 diff_linemode(Text1, Text2) ->
+    T1 = to_utf32(Text1),
+    T2 = to_utf32(Text2),
+    Diffs32 = diff_linemode32(T1, T2),
+    [{Op, to_utf8(D)} || {Op, D} <- Diffs32].
+
+%% Internal: operates entirely on UTF-32 binaries.
+diff_linemode32(Text1, Text2) ->
     {CharText1, CharText2, Lines} = lines_to_chars(Text1, Text2),
-    Diffs = diff(CharText1, CharText2, false),
+    Diffs = diff32(CharText1, CharText2, false),
 
     %% Transform the diffs back to lines.
     Diffs1 = decode_lines(Diffs, Lines),
 
-    Cleaned = cleanup_merge(Diffs1),
+    Cleaned = cleanup_merge32(Diffs1),
     cleanup_line_diff(Cleaned, <<>>, <<>>, [], []).
 
 
@@ -313,45 +356,51 @@ cleanup_line_diff([{equal, _}=E|Rest], DeleteData, InsertData, TmpAcc, Acc)
 
 %% Found leading insert and delete data, diff the texts and replace the operations.
 cleanup_line_diff([{equal, _}=E|Rest], DeleteData, InsertData, _TmpAcc, Acc) ->
-    %% rediff the delete and insert data.
-    Diffs = diff(DeleteData, InsertData, false),
+    %% Data is already UTF-32 — pass directly to diff32.
+    Diffs = diff32(DeleteData, InsertData, false),
     Acc1 = lists:reverse(Diffs) ++ Acc,
     cleanup_line_diff(Rest, <<>>, <<>>, [], [E|Acc1]).
 
 
-%% Diff lines
+%% Diff lines.
+%% Text1 and Text2 are UTF-32 binaries. Lines are stored as UTF-32 binaries.
+%% CharText1/CharText2 are UTF-32 binaries where each 4-byte word is a line index.
 lines_to_chars(Text1, Text2) ->
-    {CharText1, NextChar, Lines1, Dict1} = lines_to_chars(Text1, 0, <<>>, 0, [], dict:new()),
-    {CharText2, _, Lines2, _Dict2} = lines_to_chars(Text2, 0, <<>>, NextChar, Lines1, Dict1),
+    Utf8Text1 = to_utf8(Text1),
+    Utf8Text2 = to_utf8(Text2),
+    {CharText1, NextChar, Lines1, Map1} = lines_to_chars(Utf8Text1, 0, <<>>, 0, [], #{}),
+    {CharText2, _, Lines2, _Map2} = lines_to_chars(Utf8Text2, 0, <<>>, NextChar, Lines1, Map1),
 
     {CharText1, CharText2, lists:reverse(Lines2)}.
 
-% Transform each unique line into a single char
-lines_to_chars(Text, Idx, CharText, NextChar, Lines, D) when Idx >= size(Text) ->
-    {CharText, NextChar, Lines, D};
-lines_to_chars(Text, Idx, CharText, NextChar, Lines, D) ->
-    case binary:match(Text, <<"\n">>, [{scope, {Idx, size(Text)-Idx}}]) of
+%% Transform each unique line into a 4-byte index; store line content as UTF-32.
+lines_to_chars(Text, Idx, CharText, NextChar, Lines, Map) when Idx >= byte_size(Text) ->
+    {CharText, NextChar, Lines, Map};
+lines_to_chars(Text, Idx, CharText, NextChar, Lines, Map) ->
+    case binary:match(Text, <<"\n">>, [{scope, {Idx, byte_size(Text)-Idx}}]) of
         nomatch ->
             <<_:Idx/binary, Line/binary>> = Text,
-            {Char, NextChar1, Lines1, D1} = insert_line(Line, Lines, D, NextChar),
-            CharText1 = <<CharText/binary, Char/utf8>>,
-            {CharText1, NextChar1, Lines1, D1};
+            {Char, NextChar1, Lines1, Map1} = insert_line(to_utf32(Line), Lines, Map, NextChar),
+            CharText1 = <<CharText/binary, Char:32>>,
+            {CharText1, NextChar1, Lines1, Map1};
         {Start, _} ->
             LineLength = Start - Idx + 1,
             <<_:Idx/binary, Line:LineLength/binary, _/binary>> = Text,
-
-            {Char, NextChar1, Lines1, D1} = insert_line(Line, Lines, D, NextChar),
-            CharText1 = <<CharText/binary, Char/utf8>>,
-
-            lines_to_chars(Text, Idx + LineLength, CharText1, NextChar1, Lines1, D1) 
+            {Char, NextChar1, Lines1, Map1} = insert_line(to_utf32(Line), Lines, Map, NextChar),
+            CharText1 = <<CharText/binary, Char:32>>,
+            lines_to_chars(Text, Idx + LineLength, CharText1, NextChar1, Lines1, Map1)
     end.
 
-insert_line(Line, Lines, Dict, NextChar) ->
-    case dict:find(Line, Dict) of
-        {ok, Char} ->
-            {Char, NextChar, Lines, Dict};
-        error ->
-            {NextChar, NextChar+1, [Line|Lines], dict:store(Line, NextChar, Dict)}
+
+insert_line(Line, Lines, Map, NextChar) ->
+    Hash = erlang:phash2(Line, ?PHASH2_RANGE),
+    case Map of
+        %% Hash hit — verify the stored line matches to guard against collisions.
+        #{Hash := {Char, Line}} ->
+            {Char, NextChar, Lines, Map};
+        %% Hash miss or collision with a different line — assign a new index.
+        _ ->
+            {NextChar, NextChar + 1, [Line | Lines], Map#{Hash => {NextChar, Line}}}
     end.
 
 decode_lines(Diffs, Lines) when is_list(Lines) ->
@@ -361,7 +410,8 @@ decode_lines(Diffs, Lines) when is_list(Lines) ->
 decode_lines([], _LinesTuple, Acc) ->
     lists:reverse(Acc);
 decode_lines([{Op, Data} | Rest], LinesTuple, Acc) ->
-    Data1 = << <<(element(C + 1, LinesTuple))/binary>> || <<C/utf8>> <= Data >>,
+    %% Each index is a 32-bit word; lines are already UTF-32 — just concatenate.
+    Data1 = << <<(element(C + 1, LinesTuple))/binary>> || <<C:32>> <= Data >>,
     decode_lines(Rest, LinesTuple, [{Op, Data1} | Acc]).
 
 
@@ -377,16 +427,20 @@ decode_lines([{Op, Data} | Rest], LinesTuple, Acc) ->
 %%    Returns:
 %%      Array of diff tuples.
 %%    """
+%% Public entry point — converts UTF-8 inputs to UTF-32, runs bisect, converts back.
 diff_bisect(A, B) when is_binary(A) andalso is_binary(B) ->
-    A32 = unicode:characters_to_binary(A, utf8, utf32),
-    B32 = unicode:characters_to_binary(B, utf8, utf32),
-    M = byte_size(A32) div 4,
-    N = byte_size(B32) div 4,
-    try compute_diff_bisect1(A32, B32, M, N) of
+    Diffs32 = diff_bisect32(to_utf32(A), to_utf32(B)),
+    [{Op, to_utf8(D)} || {Op, D} <- Diffs32].
+
+%% Internal bisect working entirely on UTF-32 binaries.
+diff_bisect32(A, B) ->
+    M = byte_size(A) div 4,
+    N = byte_size(B) div 4,
+    try compute_diff_bisect1(A, B, M, N) of
         no_overlap -> [{delete, A}, {insert, B}]
     catch
         throw:{overlap, X, Y} ->
-            diff_bisect_split(A, B, A32, B32, X, Y)
+            diff_bisect_split(A, B, X, Y)
     end.
 
 compute_diff_bisect1(A, B, M, N) ->
@@ -414,11 +468,13 @@ compute_diff_bisect1(A, B, M, N) ->
         S3 = for(-D + S1#bisect_state.k1start, D + 1 - S1#bisect_state.k1end, 2, fun(K1, S2) ->
             K1Offset = VOffset + K1,
 
-            X1 = case K1 =:= -D orelse (K1 =/= D andalso 
-                    (array:get(K1Offset-1, S2#bisect_state.v1) < array:get(K1Offset+1, S2#bisect_state.v1))) of
-                true -> array:get(K1Offset + 1, S2#bisect_state.v1);
-                false -> array:get(K1Offset - 1, S2#bisect_state.v1) + 1
-            end,
+            X1 = case K1 =:= -D
+                      orelse (K1 =/= D
+                              andalso (array:get(K1Offset-1, S2#bisect_state.v1) < array:get(K1Offset+1, S2#bisect_state.v1)))
+                 of
+                     true -> array:get(K1Offset + 1, S2#bisect_state.v1);
+                     false -> array:get(K1Offset - 1, S2#bisect_state.v1) + 1
+                 end,
 
             Y1 = X1 - K1,
             {X1_1, Y1_1} = match_front(X1, Y1, A, M, B, N),
@@ -460,13 +516,13 @@ compute_diff_bisect1(A, B, M, N) ->
         %% Walk the reverse path one step. (verdacht hetzelfde als het ding hierboven...)
         S5 = for(-D + S3#bisect_state.k2start, D + 1 - S3#bisect_state.k2end, 2, fun(K2, S4) ->
             K2Offset = VOffset + K2,
-            X2 = case K2 =:= -D orelse (K2 =/= D andalso 
-                        array:get(K2Offset-1, S4#bisect_state.v2) < array:get(K2Offset+1, S4#bisect_state.v2)) of
-                true -> 
-                    array:get(K2Offset + 1, S4#bisect_state.v2);
-                false -> 
-                    array:get(K2Offset - 1, S4#bisect_state.v2) + 1
-            end,
+            X2 = case K2 =:= -D
+                      orelse (K2 =/= D
+                              andalso array:get(K2Offset-1, S4#bisect_state.v2) < array:get(K2Offset+1, S4#bisect_state.v2))
+                 of
+                     true -> array:get(K2Offset + 1, S4#bisect_state.v2);
+                     false -> array:get(K2Offset - 1, S4#bisect_state.v2) + 1
+                 end,
 
             Y2 = X2 - K2,
 
@@ -511,18 +567,14 @@ compute_diff_bisect1(A, B, M, N) ->
 
     no_overlap.
 
-% @doc Split A and B and process the parts.
-diff_bisect_split(A, B, A32, B32, X, Y) ->
-    A1 = utf32_prefix_to_utf8(A32, X),
-    A2 = utf32_prefix_to_utf8(B32, Y),
+% @doc Split A and B at the overlap point and recursively diff each half.
+diff_bisect_split(A, B, X, Y) ->
+    A1 = binary:part(A, 0, X * 4),
+    A2 = binary:part(B, 0, Y * 4),
+    B1 = binary:part(A, X * 4, byte_size(A) - X * 4),
+    B2 = binary:part(B, Y * 4, byte_size(B) - Y * 4),
 
-    B1 = binary:part(A, byte_size(A1), byte_size(A) - byte_size(A1)),
-    B2 = binary:part(B, byte_size(A2), byte_size(B) - byte_size(A2)),
-
-    Diffs = diff(A1, A2, false),
-    DiffsB = diff(B1, B2, false),
-
-    Diffs ++ DiffsB.
+    diff32(A1, A2, false) ++ diff32(B1, B2, false).
 
 % @doc Convert the diffs into a pretty html report
 pretty_html(Diffs) ->
@@ -597,45 +649,50 @@ levenshtein([{equal, _Data}|T], Insertions, Deletions, Levenshtein) ->
 %
 -spec cleanup_merge(diffs()) -> diffs().
 cleanup_merge(Diffs) ->
-    Diffs1 = cleanup_merge(Diffs, []),
+    Diffs32 = [{Op, to_utf32(D)} || {Op, D} <- Diffs],
+    [{Op, to_utf8(D)} || {Op, D} <- cleanup_merge32(Diffs32)].
+
+%% Internal cleanup_merge operating on UTF-32 diffs.
+cleanup_merge32(Diffs) ->
+    Diffs1 = cleanup_merge32(Diffs, []),
     canonicalize_edits(Diffs1, []).
 
 %% Done
-cleanup_merge([], Acc) ->
+cleanup_merge32([], Acc) ->
     lists:reverse(Acc);
 %% Remove operations without data.
-cleanup_merge([{_Op, <<>>}|T], Acc) ->
-    cleanup_merge(T, Acc);
+cleanup_merge32([{_Op, <<>>}|T], Acc) ->
+    cleanup_merge32(T, Acc);
 %% Merge data from equal operations
-cleanup_merge([{Op2, Data2}|T], [{Op1, Data1}|Acc]) when Op1 =:= Op2 ->
-    cleanup_merge(T, [{Op1, <<Data1/binary, Data2/binary>>}|Acc]);
+cleanup_merge32([{Op2, Data2}|T], [{Op1, Data1}|Acc]) when Op1 =:= Op2 ->
+    cleanup_merge32(T, [{Op1, <<Data1/binary, Data2/binary>>}|Acc]);
 %% Cleanup edits before equal operation
-cleanup_merge([{Op1, Data1}|T], [{Op2, _}=I, {Op3, Data3}|Acc]) when Op1 =/= Op2 andalso Op1 =:= Op3 andalso Op2 =/= equal andalso Op3 =/= equal ->
-    cleanup_merge(T, [I, {Op3, <<Data3/binary, Data1/binary>>}|Acc]);
+cleanup_merge32([{Op1, Data1}|T], [{Op2, _}=I, {Op3, Data3}|Acc]) when Op1 =/= Op2 andalso Op1 =:= Op3 andalso Op2 =/= equal andalso Op3 =/= equal ->
+    cleanup_merge32(T, [I, {Op3, <<Data3/binary, Data1/binary>>}|Acc]);
 %% Check if Op1Data and Op2Data have common prefixes.
-cleanup_merge([{equal, E1}|T], [{Op1, Op1Data}, {Op2, Op2Data}, {equal, E2}|Acc]) when Op1 =/= Op2 andalso Op1 =/= equal andalso Op2 =/= equal ->
+cleanup_merge32([{equal, E1}|T], [{Op1, Op1Data}, {Op2, Op2Data}, {equal, E2}|Acc]) when Op1 =/= Op2 andalso Op1 =/= equal andalso Op2 =/= equal ->
     {Prefix, Op1DataD, Op2DataD, Suffix} = split_pre_and_suffix(Op1Data, Op2Data),
-    cleanup_merge(T, [{equal, <<Suffix/binary, E1/binary>>}, 
+    cleanup_merge32(T, [{equal, <<Suffix/binary, E1/binary>>},
         {Op1, Op1DataD}, {Op2, Op2DataD}, {equal, <<E2/binary, Prefix/binary>>}|Acc]);
 %% Check for slide left and slide right edits
-cleanup_merge([{equal, E1}=H|T], [{Op, I}, {equal, E2}|AccTail]=Acc) when Op =:= insert orelse Op =:= delete ->
+cleanup_merge32([{equal, E1}=H|T], [{Op, I}, {equal, E2}|AccTail]=Acc) when Op =:= insert orelse Op =:= delete ->
     case is_suffix(E2, I) of
         false ->
             case is_prefix(E1, I) of
                 false ->
-                    cleanup_merge(T, [H|Acc]);
+                    cleanup_merge32(T, [H|Acc]);
                 true ->
                     P = size(E1),
                     <<_:P/binary, Post/binary>> = I,
-                    cleanup_merge([{equal, <<E2/binary, E1/binary>>}, {Op, <<Post/binary, E1/binary>>}|T], AccTail)
+                    cleanup_merge32([{equal, <<E2/binary, E1/binary>>}, {Op, <<Post/binary, E1/binary>>}|T], AccTail)
             end;
         true ->
             R = size(I) - size(E2),
-            <<Pre:R/binary,  Post/binary>> = I,
-            cleanup_merge([{Op, <<E2/binary, Pre/binary>>}, {equal, <<Post/binary, E1/binary>>}|T], AccTail)
+            <<Pre:R/binary, Post/binary>> = I,
+            cleanup_merge32([{Op, <<E2/binary, Pre/binary>>}, {equal, <<Post/binary, E1/binary>>}|T], AccTail)
     end;
-cleanup_merge([H|T], Acc) ->
-    cleanup_merge(T, [H|Acc]).
+cleanup_merge32([H|T], Acc) ->
+    cleanup_merge32(T, [H|Acc]).
 
 canonicalize_edits([{insert, I}, {delete, D} | T], Acc) ->
     canonicalize_edits(T, [{insert, I}, {delete, D} | Acc]);
@@ -648,8 +705,13 @@ canonicalize_edits([], Acc) ->
 %
 -spec cleanup_semantic(diffs()) -> diffs().
 cleanup_semantic(Diffs) ->
+    Diffs32 = [{Op, to_utf32(D)} || {Op, D} <- Diffs],
+    [{Op, to_utf8(D)} || {Op, D} <- cleanup_semantic32(Diffs32)].
+
+%% Internal semantic cleanup operating on UTF-32 diffs.
+cleanup_semantic32(Diffs) ->
     Diffs1 = cleanup_semantic_breakpoints(Diffs),
-    Diffs2 = cleanup_merge(Diffs1),
+    Diffs2 = cleanup_merge32(Diffs1),
     Diffs3 = cleanup_semantic_lossless(Diffs2),
     cleanup_semantic_overlaps(Diffs3).
 
@@ -664,13 +726,13 @@ find_breakpoint([], _Acc, _LI1, _LD1, _LI2, _LD2, _LE) ->
 find_breakpoint([{equal, Data} | T], Acc, _LI1, _LD1, LI2, LD2, _LE) ->
     find_breakpoint(T, [{equal, Data} | Acc], LI2, LD2, 0, 0, Data);
 find_breakpoint([{insert, Data} | T], Acc, LI1, LD1, LI2, LD2, LE) ->
-    NewLI2 = LI2 + text_size(Data),
+    NewLI2 = LI2 + text_size32(Data),
     case is_breakpoint(LE, LI1, LD1, NewLI2, LD2) of
         true -> {found, apply_breakpoint(LE, Acc, [{insert, Data} | T])};
         false -> find_breakpoint(T, [{insert, Data} | Acc], LI1, LD1, NewLI2, LD2, LE)
     end;
 find_breakpoint([{delete, Data} | T], Acc, LI1, LD1, LI2, LD2, LE) ->
-    NewLD2 = LD2 + text_size(Data),
+    NewLD2 = LD2 + text_size32(Data),
     case is_breakpoint(LE, LI1, LD1, LI2, NewLD2) of
         true -> {found, apply_breakpoint(LE, Acc, [{delete, Data} | T])};
         false -> find_breakpoint(T, [{delete, Data} | Acc], LI1, LD1, LI2, NewLD2, LE)
@@ -678,7 +740,7 @@ find_breakpoint([{delete, Data} | T], Acc, LI1, LD1, LI2, LD2, LE) ->
 
 is_breakpoint(undefined, _, _, _, _) -> false;
 is_breakpoint(LE, LI1, LD1, LI2, LD2) ->
-    LEN = text_size(LE),
+    LEN = text_size32(LE),
     LEN =< max(LI1, LD1) andalso LEN =< max(LI2, LD2).
 
 apply_breakpoint(LE, Acc, T) ->
@@ -743,8 +805,9 @@ find_best_slide(E1, Edit, E2, BestScore, BestE1, BestEdit, BestE2) ->
             {BestE1, BestEdit, BestE2}
     end.
 
-can_slide_right(<<C/utf8, RestEdit/binary>>, <<C/utf8, RestE2/binary>>) ->
-    {true, <<C/utf8>>, RestEdit, RestE2};
+%% In UTF-32 each codepoint is exactly 4 bytes — no pattern matching on variable-width needed.
+can_slide_right(<<Char:32, RestEdit/binary>>, <<Char:32, RestE2/binary>>) ->
+    {true, <<Char:32>>, RestEdit, RestE2};
 can_slide_right(_, _) ->
     false.
 
@@ -776,31 +839,25 @@ cleanup_semantic_overlaps(Diffs) ->
 cleanup_semantic_overlaps([{delete, Del}, {insert, Ins} | T], Acc) ->
     Overlap1 = common_overlap(Del, Ins),
     Overlap2 = common_overlap(Ins, Del),
+    TDel = text_size32(Del),
+    TIns = text_size32(Ins),
     if
         Overlap1 >= Overlap2 ->
-            TDel = size(Del),
-            TIns = size(Ins),
-            Overlap1BytesDel = overlap_to_bytes_end(Del, Overlap1),
-            Overlap1BytesIns = overlap_to_bytes_start(Ins, Overlap1),
             if
-                Overlap1BytesDel >= TDel / 2 orelse Overlap1BytesIns >= TIns / 2 ->
-                    Common = binary:part(Ins, 0, Overlap1BytesIns),
-                    NewDel = binary:part(Del, 0, TDel - Overlap1BytesDel),
-                    NewIns = binary:part(Ins, Overlap1BytesIns, TIns - Overlap1BytesIns),
+                Overlap1 * 2 >= TDel orelse Overlap1 * 2 >= TIns ->
+                    Common = binary:part(Ins, 0, Overlap1 * 4),
+                    NewDel = binary:part(Del, 0, (TDel - Overlap1) * 4),
+                    NewIns = binary:part(Ins, Overlap1 * 4, (TIns - Overlap1) * 4),
                     cleanup_semantic_overlaps([{insert, NewIns} | T], [{equal, Common}, {delete, NewDel} | Acc]);
                 true ->
                     cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
             end;
         true ->
-            TDel = size(Del),
-            TIns = size(Ins),
-            Overlap2BytesIns = overlap_to_bytes_end(Ins, Overlap2),
-            Overlap2BytesDel = overlap_to_bytes_start(Del, Overlap2),
             if
-                Overlap2BytesIns >= TIns / 2 orelse Overlap2BytesDel >= TDel / 2 ->
-                    Common = binary:part(Ins, TIns - Overlap2BytesIns, Overlap2BytesIns),
-                    NewIns = binary:part(Ins, 0, TIns - Overlap2BytesIns),
-                    NewDel = binary:part(Del, Overlap2BytesDel, TDel - Overlap2BytesDel),
+                Overlap2 * 2 >= TIns orelse Overlap2 * 2 >= TDel ->
+                    Common = binary:part(Ins, (TIns - Overlap2) * 4, Overlap2 * 4),
+                    NewIns = binary:part(Ins, 0, (TIns - Overlap2) * 4),
+                    NewDel = binary:part(Del, Overlap2 * 4, (TDel - Overlap2) * 4),
                     cleanup_semantic_overlaps([{delete, NewDel} | T], [{equal, Common}, {insert, NewIns} | Acc]);
                 true ->
                     cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
@@ -811,47 +868,26 @@ cleanup_semantic_overlaps([H | T], Acc) ->
 cleanup_semantic_overlaps([], Acc) ->
     lists:reverse(Acc).
 
-%% Helper functions for semantic cleanup
+%% In UTF-32 every codepoint is exactly 4 bytes, so all byte/codepoint conversions
+%% are simple multiplications and binary:part calls.
 
-%% @doc Convert N codepoints from the start of Bin to a byte offset.
-%% This is consistent with text_size/1 which counts codepoints (not grapheme clusters).
-overlap_to_bytes_start(Bin, N) ->
-    codepoints_to_bytes(Bin, N, 0).
-
-codepoints_to_bytes(_Bin, 0, Acc) ->
-    Acc;
-codepoints_to_bytes(<<C/utf8, Rest/binary>>, N, Acc) ->
-    codepoints_to_bytes(Rest, N - 1, Acc + byte_size(<<C/utf8>>));
-codepoints_to_bytes(<<_C, Rest/binary>>, N, Acc) ->
-    %% Invalid utf-8 byte, count as 1
-    codepoints_to_bytes(Rest, N - 1, Acc + 1);
-codepoints_to_bytes(<<>>, _N, Acc) ->
-    Acc.
-
-%% @doc Convert N codepoints from the END of Bin to a byte count of that suffix.
-overlap_to_bytes_end(Bin, N) ->
-    SkipChars = text_size(Bin) - N,
-    SkipBytes = codepoints_to_bytes(Bin, SkipChars, 0),
-    byte_size(Bin) - SkipBytes.
-
+%% @doc Return the first Len codepoints of Bin as a binary.
 substring_start(Bin, Len) ->
-    binary:part(Bin, 0, overlap_to_bytes_start(Bin, Len)).
+    binary:part(Bin, 0, Len * 4).
 
+%% @doc Return the last Len codepoints of Bin as a binary.
 substring_end(Bin, Len) ->
-    TotalLen = text_size(Bin),
+    TotalLen = text_size32(Bin),
     case TotalLen =< Len of
         true -> Bin;
-        false ->
-            SkipChars = TotalLen - Len,
-            SkipBytes = codepoints_to_bytes(Bin, SkipChars, 0),
-            binary:part(Bin, SkipBytes, byte_size(Bin) - SkipBytes)
+        false -> binary:part(Bin, (TotalLen - Len) * 4, Len * 4)
     end.
 
 common_overlap(<<>>, _) -> 0;
 common_overlap(_, <<>>) -> 0;
 common_overlap(Text1, Text2) ->
-    T1Len = text_size(Text1),
-    T2Len = text_size(Text2),
+    T1Len = text_size32(Text1),
+    T2Len = text_size32(Text2),
     {T1, T2, TMin} = if
         T1Len > T2Len -> {substring_end(Text1, T2Len), Text2, T2Len};
         T1Len < T2Len -> {Text1, substring_start(Text2, T1Len), T1Len};
@@ -867,7 +903,8 @@ common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
     case binary:match(T2, Pattern) of
         nomatch -> Best;
         {FoundByteOffset, _} ->
-            FoundCharCount = text_size(binary:part(T2, 0, FoundByteOffset)),
+            %% In UTF-32, byte offset maps directly to codepoint count.
+            FoundCharCount = FoundByteOffset div 4,
             NewLength = Length + FoundCharCount,
             if
                 NewLength > TMin -> Best;
@@ -883,22 +920,15 @@ common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
 common_overlap_loop(_T1, _T2, _TMin, Best, _Length) ->
     Best.
 
-first_char(<<C/utf8, _/binary>>) -> C;
+%% In UTF-32 the first and last codepoints are always at fixed byte offsets.
+first_char(<<C:32, _/binary>>) -> C;
 first_char(_) -> undefined.
 
 last_char(<<>>) -> undefined;
-last_char(Bin) when is_binary(Bin) ->
-    last_char(Bin, byte_size(Bin) - 1).
-
-last_char(Bin, Pos) ->
-    case binary:at(Bin, Pos) band 16#C0 of
-        16#80 ->
-            % continuation byte, keep scanning back
-            last_char(Bin, Pos - 1);
-        _ ->
-            <<_:Pos/binary, C/utf8, _/binary>> = Bin,
-            C
-    end.
+last_char(Bin) ->
+    Size = byte_size(Bin),
+    <<_:(Size-4)/binary, C:32>> = Bin,
+    C.
 
 is_non_alphanumeric(undefined) -> true;
 is_non_alphanumeric(C) ->
@@ -921,17 +951,25 @@ is_whitespace(C) ->
 is_linebreak(C) ->
     C =:= $\n orelse C =:= $\r.
 
-is_blankline_end(Bin) ->
-    case re:run(Bin, <<"\n\r?\n$">> ) of
-        {match, _} -> true;
-        nomatch -> false
-    end.
+%% In UTF-32 each codepoint is 4 bytes, so newline patterns are fixed-width.
+is_blankline_end(Bin) when byte_size(Bin) >= 8 ->
+    Size = byte_size(Bin),
+    case Bin of
+        <<_:(Size-8)/binary,  $\n:32, $\n:32>>       -> true;
+        <<_:(Size-12)/binary, $\n:32, $\r:32, $\n:32>> -> true;
+        _ -> false
+    end;
+is_blankline_end(_) -> false.
 
-is_blankline_start(Bin) ->
-    case re:run(Bin, <<"^\r?\n\r?\n">> ) of
-        {match, _} -> true;
-        nomatch -> false
-    end.
+is_blankline_start(Bin) when byte_size(Bin) >= 8 ->
+    case Bin of
+        <<$\n:32, $\n:32, _/binary>>             -> true;
+        <<$\n:32, $\r:32, $\n:32, _/binary>>     -> true;
+        <<$\r:32, $\n:32, $\n:32, _/binary>>     -> true;
+        <<$\r:32, $\n:32, $\r:32, $\n:32, _/binary>> -> true;
+        _ -> false
+    end;
+is_blankline_start(_) -> false.
 
 % @doc Do efficiency cleanup of diffs.
 %
@@ -939,60 +977,53 @@ is_blankline_start(Bin) ->
 cleanup_efficiency(Diffs) ->
     cleanup_efficiency(Diffs, 4).
 
+-spec cleanup_efficiency(diffs(), pos_integer()) -> diffs().
 cleanup_efficiency(Diffs, EditCost) ->
-    cleanup_efficiency(Diffs, false, EditCost, []).
+    Diffs32 = [{Op, to_utf32(D)} || {Op, D} <- Diffs],
+    [{Op, to_utf8(D)} || {Op, D} <- cleanup_efficiency32(Diffs32, EditCost)].
+
+%% Internal efficiency cleanup operating on UTF-32 diffs.
+cleanup_efficiency32(Diffs) ->
+    cleanup_efficiency32(Diffs, 4).
+
+cleanup_efficiency32(Diffs, EditCost) ->
+    cleanup_efficiency32(Diffs, false, EditCost, []).
 
 %% Done.
-cleanup_efficiency([], Changed, _EditCost, Acc) ->
+cleanup_efficiency32([], Changed, _EditCost, Acc) ->
     Diffs = lists:reverse(Acc),
     case Changed of
         false -> Diffs;
-        true -> cleanup_merge(Diffs)
+        true -> cleanup_merge32(Diffs)
     end;
 %% Any equality which is surrounded on both sides by an insertion and deletion need less then 
 %% EditCost characters for it to be advantageous to split.
-cleanup_efficiency([{O1, _}=A, {equal, XY}=E, {O2, _}=B | T], Changed, EditCost, Acc) when 
+cleanup_efficiency32([{O1, _}=A, {equal, XY}=E, {O2, _}=B | T], Changed, EditCost, Acc) when 
         O1 =/= O2 andalso ?IS_INS_OR_DEL(O1) andalso ?IS_INS_OR_DEL(O2) ->
     case text_smaller_than(XY, EditCost) of
         true ->
-            %% Split
             Del = {delete, XY},
             Ins = {insert, XY},
-
-            cleanup_efficiency([Ins, B | T], true, EditCost, [Del, A | Acc]);
+            cleanup_efficiency32([Ins, B | T], true, EditCost, [Del, A | Acc]);
         false ->
-            %% Equal is big enough, move A and equal out of the way.
-            cleanup_efficiency([B | T], Changed, EditCost, [E, A |Acc])
+            cleanup_efficiency32([B | T], Changed, EditCost, [E, A | Acc])
     end;
 %% Any equality which is surrounded on one side by an existing insertion and deletion and on the 
-%% other side by an exisiting insertion or deletion needs by less than half C characters long for it 
-%% to be advantagous to split.
-cleanup_efficiency([{O1, _}=A, {O2, _}=B, {equal, X}=E, {O3, _}=C | T], Changed, EditCost, Acc) when
+%% other side by an existing insertion or deletion needs less than half C characters long for it 
+%% to be advantageous to split.
+cleanup_efficiency32([{O1, _}=A, {O2, _}=B, {equal, X}=E, {O3, _}=C | T], Changed, EditCost, Acc) when
     O1 =/= O2 andalso ?IS_INS_OR_DEL(O1) andalso ?IS_INS_OR_DEL(O2) andalso ?IS_INS_OR_DEL(O3) ->
     case text_smaller_than(X, EditCost div 2 + 1) of
         true ->
-            %% Split
             Del = {delete, X},
             Ins = {insert, X},
-            cleanup_efficiency([Ins, C | T], true, EditCost, [Del, B, A | Acc]);
+            cleanup_efficiency32([Ins, C | T], true, EditCost, [Del, B, A | Acc]);
         false ->
-            %% Equal is big enough, move delete and equal out of the way.
-            cleanup_efficiency([B, E, C | T], Changed, EditCost, [A |Acc])
+            cleanup_efficiency32([B, E, C | T], Changed, EditCost, [A | Acc])
     end;
-cleanup_efficiency([H|T], Changed, EditCost, Acc) ->
-    cleanup_efficiency(T, Changed, EditCost, [H|Acc]).
+cleanup_efficiency32([H | T], Changed, EditCost, Acc) ->
+    cleanup_efficiency32(T, Changed, EditCost, [H | Acc]).
 
-
-% @doc Return true iff the text is smaller than specified 
-text_smaller_than(_, 0) ->
-    false;
-text_smaller_than(<<>>, _Size) ->
-    true;
-text_smaller_than(<<_C/utf8, Rest/binary>>, Size) when Size > 0 ->
-    text_smaller_than(Rest, Size-1);
-text_smaller_than(<<_C, Rest/binary>>, Size) when Size > 0 ->
-    %% Illegal utf-8 string, just count this as a single character and continue
-    text_smaller_than(Rest, Size-1).
 
 % @doc create a patch from a list of diffs
 make_patch(Diffs) when is_list(Diffs) ->
@@ -1012,10 +1043,8 @@ make_patch(Diffs, SourceText) when is_list(Diffs) andalso is_binary(SourceText) 
 
 make_patch([], _PrePatchText, _PostPatchText, _Count1, _Count2, [Patch|Rest]=Patches) ->
     case Patch#patch.diffs of
-        [] -> 
-            lists:reverse(Rest);
-        _ -> 
-            lists:reverse(Patches)
+        [] -> lists:reverse(Rest);
+        _ -> lists:reverse(Patches)
     end;
     
 make_patch([{insert, Data}=D|T], PrePatchText, PostPatchText, Count1, Count2, [Patch|Rest]) ->
@@ -1090,11 +1119,6 @@ unique_match(Pattern, Text) ->
 %% Helpers
 %%
 
-% @doc Return true iff binary is a single character.
-single_char(<<>>) -> false;
-single_char(<<_C/utf8>>) -> true;
-single_char(Bin) when is_binary(Bin) -> false.
-
 % @doc Return true iff A is a prefix of B
 is_prefix(A, B) when size(A) > size(B) ->
     false;
@@ -1155,120 +1179,45 @@ split_pre_and_suffix(Text1, Text2) ->
     {Prefix, MiddleText1, MiddleText2, Suffix}.
 
     
-% @doc Return the common prefix of Text1 and Text2. (utf8 aware)
+% @doc Return the common prefix of Text1 and Text2. Works on UTF-32 — always codepoint-aligned.
 common_prefix(Text1, Text2) ->
     Length = binary:longest_common_prefix([Text1, Text2]),
-    Prefix = binary:part(Text1, 0, Length),
-    
-    %% Utf-8 repair the tail of the prefix. It could contain a half utf-8 char.
-    {Prefix1, _} = repair_tail(Prefix),
-    Prefix1.
+    %% Round down to 4-byte boundary (should already be aligned for valid UTF-32).
+    binary:part(Text1, 0, (Length div 4) * 4).
 
-% @doc Return the common prefix of Text1 and Text2 (utf8 aware)
+% @doc Return the common suffix of Text1 and Text2. Works on UTF-32 — always codepoint-aligned.
 common_suffix(Text1, Text2) ->
     Length = binary:longest_common_suffix([Text1, Text2]),
-    Suffix = binary:part(Text1, size(Text1), -Length),
-
-    %% Utf-8 repair the head of the suffix. Could contain a half utf8 char
-    {_, Suffix1} = repair_head(Suffix),
-    Suffix1.
+    binary:part(Text1, byte_size(Text1), -((Length div 4) * 4)).
 
 
-% @doc Count the number of characters in a utf8 binary.
+% @doc Count the number of codepoints in a UTF-8 binary.
+% @deprecated Use text_size32/1 internally. This public function may be removed in a future version.
+-spec text_size(unicode:unicode_binary()) -> non_neg_integer().
 text_size(Text) when is_binary(Text) ->
-    text_size(Text, 0).
+    string:length(Text).
 
-text_size(<<>>, Count) ->
-    Count;
-text_size(<<_C/utf8, Rest/binary>>, Count) ->
-    text_size(Rest, Count+1);
-text_size(_, _) ->
-    error(badarg).
+% @doc Count the number of codepoints in a UTF-32 binary. O(1).
+text_size32(Text) when is_binary(Text) ->
+    byte_size(Text) div 4.
+
+% @doc Return true iff Text has fewer than Size codepoints. O(1) for UTF-32.
+text_smaller_than(_, 0) ->
+    false;
+text_smaller_than(Text, Size) ->
+    byte_size(Text) < Size * 4.
 
 %%
-%% UTF-32 utilities
+%% UTF-32 boundary helpers
 %%
 
-% @doc Convert the first N codepoints of a UTF-32BE binary to a UTF-8 binary.
-utf32_prefix_to_utf8(Utf32, CodepointCount) ->
-    Prefix32 = binary:part(Utf32, 0, CodepointCount * 4),
-    unicode:characters_to_binary(Prefix32, utf32, utf8).
+% @doc Convert a UTF-8 binary to UTF-32, crashing on invalid input.
+to_utf32(Bin) ->
+    <<_/binary>> = unicode:characters_to_binary(Bin, utf8, utf32).
 
-%% @doc Checks the trailing bytes for utf8 prefix bytes.
-repair_tail(<<>>) ->
-    {<<>>, <<>>};
-%% Checks 
-repair_tail(Bin) ->
-    Size = size(Bin),
-    Size1 = Size-1, Size2 = Size-2, Size3 = Size-3, Size4 = Size-4,
-    case Bin of
-        %% Valid 1 -byte
-        <<_:Size1/binary, 2#0:1, _A:7>> ->
-             {Bin, <<>>}; 
-
-        %% Invalid 1-byte
-        <<Pre:Size1/binary, 2#110:3, A:5>> ->
-            {Pre, <<2#110:3, A:5>>};
-        <<Pre:Size1/binary, 2#1110:4, A:4>> ->
-            {Pre, <<2#1110:4, A:4>>};
-        <<Pre:Size1/binary, 2#11110:5, A:3>> ->
-            {Pre, <<2#11110:5, A:3>>};
-
-        %% Valid 2-byte ending
-        <<_:Size2/binary, 2#110:3, _A:5, 2#10:2, _B:6>> ->
-             {Bin, <<>>};
-
-        %% Invalid 2-byte ending
-        <<Pre:Size2/binary, 2#1110:4, A:4, 2#10:2, B:6>> ->
-            {Pre, <<2#1110:4, A:4, 2#10:2, B:6>>};
-        <<Pre:Size2/binary, 2#11110:5, A:3, 2#10:2, B:6>> ->
-            {Pre, <<2#11110:5, A:3, 2#10:2, B:6>>};
-
-        %% Valid 3-byte ending
-        <<_:Size3/binary, 2#1110:4, _A:4,  2#10:2, _B:6,  2#10:2, _C:6>> ->
-             {Bin, <<>>};
-
-        %% Invalid 3-byte ending
-        <<Pre:Size3/binary, 2#11110:5, A:3,  2#10:2, B:6, 2#10:2, C:6>> ->
-            {Pre, <<2#11110:5, A:3, 2#10:2, B:6, 2#10:2, C:6>>};
-
-        %% Valid 4-byte ending
-        <<_:Size4/binary, 2#11110:5, _A:3,  2#10:2, _B:6,   2#10:2, _C:6,  2#10:2, _D:6>> ->
-             {Bin, <<>>};
-
-        %% Illegal utf-8 sequence.
-        _ ->
-	    %% Can't repair it, just return
-	    {Bin, <<>>}
-    end.
-
-% @doc Checks the beginning of a binary and strips of partial utf-8 encoded bytes.
-repair_head(<<>>) ->
-    {<<>>, <<>>};
-% valid 1-byte beginning
-repair_head(<<2#0:1, _A:7, _Rest/binary>>=Bin) ->
-    {<<>>, Bin};
-% valid 4-byte beginning
-repair_head(<<2#11110:5, _A:3,  2#10:2, _B:6, 2#10:2, _C:6,  2#10:2, _D:6, _Rest/binary>>=Bin) ->
-    {<<>>, Bin};
-% valid 3-byte beginning
-repair_head(<<2#1110:4, _A:4,  2#10:2, _B:6,  2#10:2, _C:6, _Rest/binary>>=Bin) ->
-    {<<>>, Bin};
-% invalid 3-byte beginning
-repair_head(<<2#10:2, A:6, 2#10:2, B:6, 2#10:2, C:6, Rest/binary>>) ->
-    {<<2#10:2, A:6, 2#10:2, B:6, 2#10:2, C:6>>, Rest};
-% valid 2-byte beginning
-repair_head(<<2#110:3, _A:5, 2#10:2, _B:6, _Rest/binary>>=Bin) ->
-    {<<>>, Bin};
-% invalid 2-byte beginnings
-repair_head(<<2#10:2, A:6, 2#10:2, B:6, Rest/binary>>) ->
-    {<<2#10:2, A:6, 2#10:2, B:6>>, Rest};
-% invalid 1-byte beginning
-repair_head(<<2#10:2, A:6, Rest/binary>>) ->
-    {<<2#10:2, A:6>>, Rest};
-repair_head(Bin) ->
-    %% Illegal sequence, can't repair it.
-    {<<>>, Bin}.
+% @doc Convert a UTF-32 binary to UTF-8, crashing on invalid input.
+to_utf8(Bin) ->
+    <<_/binary>> = unicode:characters_to_binary(Bin, utf32, utf8).
 
 %%
 %% Tests
@@ -1278,43 +1227,10 @@ repair_head(Bin) ->
 
 -include_lib("eunit/include/eunit.hrl").
 
-repair_tail_test() ->
-    ?assertEqual({<<>>, <<>>}, repair_tail(<<>>)),
-    ?assertEqual({<<"aap">>, <<>>}, repair_tail(<<"aap">>)),
-    ?assertEqual({<<200/utf8>>, <<>>}, repair_tail(<<200/utf8>>)),
-    ?assertEqual({<<600/utf8>>, <<>>}, repair_tail(<<600/utf8>>)),
-    ?assertEqual({<<1000/utf8>>, <<>>}, repair_tail(<<1000/utf8>>)),
-
-    ?assertEqual({<<"aap">>, <<200>>}, repair_tail(<<"aap", 200>>)),
-
-    ?assertEqual({<<"test">>, <<240, 159, 159>>}, repair_tail(<<116,101,115,116,240,159,159>>)),
-
-    ok.
-
-repair_head_test() -> 
-    ?assertEqual({<<>>, <<>>}, repair_head(<<>>)),
-    ?assertEqual({<<>>, <<"a">>}, repair_head(<<"a">>)),
-    ?assertEqual({<<>>, <<"aap">>}, repair_head(<<"aap">>)),
-    ?assertEqual({<<>>, <<200/utf8>>}, repair_head(<<200/utf8>>)),
-    ?assertEqual({<<>>, <<600/utf8>>}, repair_head(<<600/utf8>>)),
-    ?assertEqual({<<>>, <<1000/utf8>>}, repair_head(<<1000/utf8>>)),
-
-    %%
-    ?assertEqual({<<2#10:2, 10:6>>, <<"aap">>}, 
-        repair_head(<<2#10:2, 10:6, "aap">>)),
-    ?assertEqual({<<2#10:2, 60:6, 2#10:2, 10:6>>, <<"aap">>}, 
-        repair_head(<<2#10:2, 60:6, 2#10:2, 10:6, "aap">>)),
-    ?assertEqual({<<2#10:2, 60:6, 2#10:2, 10:6, 2#10:2, 13:6>>, <<"aap">>}, 
-        repair_head(<<2#10:2, 60:6, 2#10:2, 10:6, 2#10:2, 13:6, "aap">>)),
-
-    ok.
-    
-
 for_test() ->
     ?assertEqual(9, for(0, 10, fun(I, _N) -> {continue, I} end, undefined)),
     ?assertEqual(0, for(0, 10, fun(I, _N) -> {break, I} end, undefined)),
     ok.
-
 
 diff_utf8_test() ->
     ?assertEqual([{equal, <<208,174, 208,189, 208,184, 208,186, 208,190, 208,180>>}], 
@@ -1342,10 +1258,6 @@ diff_bisect_test() ->
                   {equal,<<" a banana">>}], diff_bisect(<<"fruit flies like a banana">>, 
                                                         <<"fruit flies eat a banana">>)),
 
-
-    %?assertEqual([{delete,<<"cat">>},
-    %              {insert,<<"map">>}], diff_bisect(<<"cat">>, <<"map">>)), 
-
     ?assertEqual([{delete,<<"c">>},
                   {insert,<<"m">>},
                   {equal,<<"a">>},
@@ -1361,84 +1273,87 @@ diff_bisect_test() ->
 
     ?assertEqual([{equal, <<"text">>}],
                  diff_bisect(<<"text">>, <<"text">>)),
-                 
 
     ok.
 
+%% half_match operates on UTF-32 internally; wrap inputs/outputs for testing.
+half_match_utf8(A, B) ->
+    case half_match(to_utf32(A), to_utf32(B)) of
+        undefined -> undefined;
+        {half_match, A1, A2, B1, B2, C} ->
+            {half_match, to_utf8(A1), to_utf8(A2), to_utf8(B1), to_utf8(B2), to_utf8(C)}
+    end.
+
 half_match_test() ->
-    ?assertEqual(undefined, half_match(<<"1234567890">>, <<"abcdef">>)),
-    ?assertEqual(undefined, half_match(<<"12345">>, <<"23">>)),
+    ?assertEqual(undefined, half_match_utf8(<<"1234567890">>, <<"abcdef">>)),
+    ?assertEqual(undefined, half_match_utf8(<<"12345">>, <<"23">>)),
 
     %% Single Match
     ?assertEqual({half_match, <<"12">>, <<"90">>, <<"a">>, <<"z">>, <<"345678">>}, 
-        half_match(<<"1234567890">>, <<"a345678z">>)),
+        half_match_utf8(<<"1234567890">>, <<"a345678z">>)),
     ?assertEqual({half_match, <<"a">>, <<"z">>, <<"12">>, <<"90">>, <<"345678">>}, 
-        half_match(<<"a345678z">>, <<"1234567890">>)),
+        half_match_utf8(<<"a345678z">>, <<"1234567890">>)),
     ?assertEqual({half_match, <<"abc">>, <<"z">>, <<"1234">>, <<"0">>, <<"56789">>}, 
-        half_match(<<"abc56789z">>, <<"1234567890">>)),
+        half_match_utf8(<<"abc56789z">>, <<"1234567890">>)),
     ?assertEqual({half_match, <<"a">>, <<"xyz">>, <<"1">>, <<"7890">>, <<"23456">>}, 
-        half_match(<<"a23456xyz">>, <<"1234567890">>)),
+        half_match_utf8(<<"a23456xyz">>, <<"1234567890">>)),
 
     %% Multiple Matches
     ?assertEqual({half_match, <<"12123">>, <<"123121">>, <<"a">>, <<"z">>, <<"1234123451234">>}, 
-        half_match(<<"121231234123451234123121">>, <<"a1234123451234z">>)),
+        half_match_utf8(<<"121231234123451234123121">>, <<"a1234123451234z">>)),
 
     ?assertEqual({half_match, <<"">>, <<"-=-=-=-=-=">>, <<"x">>, <<"">>, <<"x-=-=-=-=-=-=-=">>}, 
-        half_match(<<"x-=-=-=-=-=-=-=-=-=-=-=-=">>, <<"xx-=-=-=-=-=-=-=">>)),
+        half_match_utf8(<<"x-=-=-=-=-=-=-=-=-=-=-=-=">>, <<"xx-=-=-=-=-=-=-=">>)),
 
     ?assertEqual({half_match, <<"-=-=-=-=-=">>, <<"">>, <<"">>, <<"y">>, <<"-=-=-=-=-=-=-=y">>}, 
-        half_match(<<"-=-=-=-=-=-=-=-=-=-=-=-=y">>, <<"-=-=-=-=-=-=-=yy">>)),
+        half_match_utf8(<<"-=-=-=-=-=-=-=-=-=-=-=-=y">>, <<"-=-=-=-=-=-=-=yy">>)),
 
-    % Non-optimal halfmatch.
-    % Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
     ?assertEqual({half_match, <<"qHillo">>, <<"w">>, <<"x">>, <<"Hulloy">>, <<"HelloHe">>}, 
-        half_match(<<"qHilloHelloHew">>, <<"xHelloHeHulloy">>)),
+        half_match_utf8(<<"qHilloHelloHew">>, <<"xHelloHeHulloy">>)),
 
     ok.
 
-
+%% common_prefix/suffix operate on UTF-32; wrap for testing.
 common_prefix_test() ->
-    ?assertEqual(<<>>, common_prefix(<<"Text">>, <<"Next">>)),
-    ?assertEqual(<<"T">>, common_prefix(<<"Text">>, <<"Tax">>)),
-    ?assertEqual(<<"text">>, common_prefix(<<"text">>, <<"text">>)),
+    Prefix = fun(A, B) -> to_utf8(common_prefix(to_utf32(A), to_utf32(B))) end,
 
-    ?assertEqual(<<"test🟡"/utf8>>, common_prefix(<<"test🟡123"/utf8>>, <<"test🟡456"/utf8>>)),
+    ?assertEqual(<<>>, Prefix(<<"Text">>, <<"Next">>)),
+    ?assertEqual(<<"T">>, Prefix(<<"Text">>, <<"Tax">>)),
+    ?assertEqual(<<"text">>, Prefix(<<"text">>, <<"text">>)),
 
-    ?assertEqual(<<"test">>, common_prefix(<<"test🟢123"/utf8>>, <<"test🟡123"/utf8>>)),
-    ?assertEqual(<<"test">>, common_prefix(<<"test🟡123"/utf8>>, <<"test🟢123"/utf8>>)),
-    
-    ?assertEqual(<<"test">>, common_prefix(<<"test🟡123"/utf8>>, <<"test🔵123"/utf8>>)),
-    ?assertEqual(<<"test">>, common_prefix(<<"test🔵123"/utf8>>, <<"test🟡123"/utf8>>)),
-
-    ?assertEqual(<<"test">>, common_prefix(<<"test🟡123"/utf8>>, <<"test⚫️123"/utf8>>)),
-    ?assertEqual(<<"test">>, common_prefix(<<"test⚫️123"/utf8>>, <<"test🟡123"/utf8>>)),
-
+    ?assertEqual(<<"test🟡"/utf8>>, Prefix(<<"test🟡123"/utf8>>, <<"test🟡456"/utf8>>)),
+    ?assertEqual(<<"test">>, Prefix(<<"test🟢123"/utf8>>, <<"test🟡123"/utf8>>)),
+    ?assertEqual(<<"test">>, Prefix(<<"test🟡123"/utf8>>, <<"test🟢123"/utf8>>)),
+    ?assertEqual(<<"test">>, Prefix(<<"test🟡123"/utf8>>, <<"test🔵123"/utf8>>)),
+    ?assertEqual(<<"test">>, Prefix(<<"test🔵123"/utf8>>, <<"test🟡123"/utf8>>)),
+    ?assertEqual(<<"test">>, Prefix(<<"test🟡123"/utf8>>, <<"test⚫️123"/utf8>>)),
+    ?assertEqual(<<"test">>, Prefix(<<"test⚫️123"/utf8>>, <<"test🟡123"/utf8>>)),
 
     ok.
-
 
 common_suffix_test() ->
-    ?assertEqual(<<"ext">>, common_suffix(<<"Text">>, <<"Next">>)),
-    ?assertEqual(<<>>, common_suffix(<<"Text">>, <<"Tax">>)),
-    ?assertEqual(<<"text">>, common_suffix(<<"text">>, <<"text">>)),
+    Suffix = fun(A, B) -> to_utf8(common_suffix(to_utf32(A), to_utf32(B))) end,
+
+    ?assertEqual(<<"ext">>, Suffix(<<"Text">>, <<"Next">>)),
+    ?assertEqual(<<>>, Suffix(<<"Text">>, <<"Tax">>)),
+    ?assertEqual(<<"text">>, Suffix(<<"text">>, <<"text">>)),
     ok.
 
+%% split_pre_and_suffix operates on UTF-32; wrap for testing.
 split_pre_and_suffix_test() ->
-    ?assertEqual({<<>>, <<>>, <<>>, <<>>}, split_pre_and_suffix(<<>>, <<>>)),
+    Split = fun(A, B) ->
+        {P, M1, M2, S} = split_pre_and_suffix(to_utf32(A), to_utf32(B)),
+        {to_utf8(P), to_utf8(M1), to_utf8(M2), to_utf8(S)}
+    end,
 
-    ?assertEqual({<<>>, <<"a">>, <<"b">>, <<>>}, split_pre_and_suffix(<<"a">>, <<"b">>)),
-    
-    ?assertEqual({<<"a">>, <<"b">>, <<"c">>, <<"d">>}, 
-       split_pre_and_suffix(<<"abd">>, <<"acd">>)),
-    ?assertEqual({<<"aa">>, <<"bb">>, <<"cc">>, <<"dd">>}, 
-       split_pre_and_suffix(<<"aabbdd">>, <<"aaccdd">>)),
-    ?assertEqual({<<"aa">>, <<"bb">>, <<"c">>, <<"dd">>}, 
-       split_pre_and_suffix(<<"aabbdd">>, <<"aacdd">>)),
-
+    ?assertEqual({<<>>, <<>>, <<>>, <<>>}, Split(<<>>, <<>>)),
+    ?assertEqual({<<>>, <<"a">>, <<"b">>, <<>>}, Split(<<"a">>, <<"b">>)),
+    ?assertEqual({<<"a">>, <<"b">>, <<"c">>, <<"d">>}, Split(<<"abd">>, <<"acd">>)),
+    ?assertEqual({<<"aa">>, <<"bb">>, <<"cc">>, <<"dd">>}, Split(<<"aabbdd">>, <<"aaccdd">>)),
+    ?assertEqual({<<"aa">>, <<"bb">>, <<"c">>, <<"dd">>}, Split(<<"aabbdd">>, <<"aacdd">>)),
     ?assertEqual({<<"cat ">>, <<>>, <<"mouse dog ">>, <<>>},
-                 split_pre_and_suffix(<<"cat ">>, <<"cat mouse dog ">>)),
-
-    ok. 
+                 Split(<<"cat ">>, <<"cat mouse dog ">>)),
+    ok.
 
 unique_match_test() ->
     ?assertEqual(true, unique_match(<<"a">>, <<"abc">>)),
@@ -1447,53 +1362,73 @@ unique_match_test() ->
     ?assertEqual(false, unique_match(<<"ab">>, <<"abab">>)),
     ok.
 
-
 text_smaller_than_test() ->
-    ?assertEqual(true, text_smaller_than(<<>>, 5)),
-    ?assertEqual(true, text_smaller_than(<<>>, 1)),
+    %% text_smaller_than now works on UTF-32 binaries.
+    ?assertEqual(true,  text_smaller_than(to_utf32(<<>>), 5)),
+    ?assertEqual(true,  text_smaller_than(to_utf32(<<>>), 1)),
+    ?assertEqual(false, text_smaller_than(to_utf32(<<>>), 0)),
+    ?assertEqual(false, text_smaller_than(to_utf32(<<"abc">>), 0)),
+    ?assertEqual(false, text_smaller_than(to_utf32(<<"abc">>), 1)),
+    ?assertEqual(true,  text_smaller_than(to_utf32(<<"abc">>), 4)),
 
-    ?assertEqual(false, text_smaller_than(<<>>, 0)),
-
-    ?assertEqual(false, text_smaller_than(<<"abc">>, 0)),
-    ?assertEqual(false, text_smaller_than(<<"abc">>, 1)),
-    ?assertEqual(true, text_smaller_than(<<"abc">>, 4)),
-
-    %% Test if we count characters.
-    Utf8Binary = <<1046/utf8, 1011/utf8, 1022/utf8, 127/utf8>>,
-    ?assertEqual(true, size(Utf8Binary) > 5), % binary is larger due to utf8 encoding
-    ?assertEqual(true, text_smaller_than(Utf8Binary, 5)),
-    ?assertEqual(false, text_smaller_than(Utf8Binary, 4)),
-
-    %% Test illegal utf8 sequence, the chars are counted as normal chars
-    ?assertEqual(false, text_smaller_than(<<149,157,112,8>>, 4)),
+    %% Multi-byte UTF-8 characters each become exactly 4 bytes in UTF-32.
+    Utf32 = to_utf32(<<1046/utf8, 1011/utf8, 1022/utf8, 127/utf8>>),
+    ?assertEqual(true,  text_smaller_than(Utf32, 5)),
+    ?assertEqual(false, text_smaller_than(Utf32, 4)),
 
     ok.
 
 lines_to_chars_test() ->
-    ?assertEqual({<<>>, <<>>, []}, lines_to_chars(<<>>, <<>>)),
+    %% lines_to_chars takes UTF-32 input, returns UTF-32 index sequences and UTF-32 lines.
+    {C1, C2, Lines} = lines_to_chars(to_utf32(<<>>), to_utf32(<<>>)),
+    ?assertEqual(<<>>, C1),
+    ?assertEqual(<<>>, C2),
+    ?assertEqual([], Lines),
 
-    %% Simple text
-    ?assertEqual({<<0, 1>>, <<0, 2>>, [<<"hello\n">>, <<"world\n">>, <<"maas\n">>]}, 
-        lines_to_chars(<<"hello\n\world\n">>, <<"hello\nmaas\n">>)),
-
-    %% No newline at the end.
-    ?assertEqual({<<0, 1>>, <<0, 2>>, [<<"hello\n">>, <<"world\n">>, <<"maas">>]}, 
-        lines_to_chars(<<"hello\n\world\n">>, <<"hello\nmaas">>)),
-   
-    %% No newline at the end.
-    ?assertEqual({<<0, 1>>, <<0, 2>>, [<<"hello\n">>, <<"world\n">>, <<"maas">>]}, 
-        lines_to_chars(<<"hello\n\world\n">>, <<"hello\nmaas">>)),
-    
-    %% With empty lines 
-    ?assertEqual({<<0, 1, 2>>, <<0, 1, 3>>, [<<"hello\n">>, <<"\n">>, <<"world\n">>, <<"maas">>]}, 
-        lines_to_chars(<<"hello\n\nworld\n">>, <<"hello\n\nmaas">>)),
+    {C3, C4, Lines2} = lines_to_chars(to_utf32(<<"hello\nworld\n">>), to_utf32(<<"hello\nmaas\n">>)),
+    %% Lines are stored as UTF-32 binaries.
+    ?assertEqual([to_utf32(<<"hello\n">>), to_utf32(<<"world\n">>), to_utf32(<<"maas\n">>)], Lines2),
+    ?assertEqual(<<0:32, 1:32>>, C3),
+    ?assertEqual(<<0:32, 2:32>>, C4),
 
     ok.
-
 
 diff_linemode_test() ->
     ?assertEqual([{equal, <<"hello\n">>}, {delete, <<"world\n">>}, {insert, <<"maas\n">>}], 
         diff_linemode(<<"hello\nworld\n">>, <<"hello\nmaas\n">>)),
+
+    ok.
+
+diff_options_test() ->
+    A = <<"cat">>,
+    B = <<"map">>,
+
+    %% No options — same as diff/2.
+    ?assertEqual(diff(A, B), diff(A, B, [])),
+
+    %% no_linemode: result is structurally equivalent (same source/dest text).
+    NoLinemode = diff(A, B, [no_linemode]),
+    ?assertEqual(source_text(diff(A, B)),      source_text(NoLinemode)),
+    ?assertEqual(destination_text(diff(A, B)), destination_text(NoLinemode)),
+
+    %% semantic option applies cleanup_semantic to the raw diff.
+    ?assertEqual(cleanup_semantic(diff(A, B)), diff(A, B, [semantic])),
+
+    %% efficiency option applies cleanup_efficiency to the raw diff.
+    ?assertEqual(cleanup_efficiency(diff(A, B)), diff(A, B, [efficiency])),
+
+    %% {efficiency, Cost} applies cleanup_efficiency/2 with the given cost.
+    ?assertEqual(cleanup_efficiency(diff(A, B), 2), diff(A, B, [{efficiency, 2}])),
+
+    %% Both: semantic first, then efficiency.
+    ?assertEqual(
+        cleanup_efficiency(cleanup_semantic(diff(A, B))),
+        diff(A, B, [semantic, efficiency])),
+
+    %% Order of options in list does not affect cleanup order.
+    ?assertEqual(
+        diff(A, B, [semantic, efficiency]),
+        diff(A, B, [efficiency, semantic])),
 
     ok.
 
