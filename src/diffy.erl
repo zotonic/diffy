@@ -304,7 +304,9 @@ next_char(_Bin, Pos) ->
 %% In UTF-32 every codepoint is exactly 4 bytes. Start is always a 4-byte-aligned
 %% byte offset, so no alignment step is needed.
 seed(Long, Start) ->
-    SeedSize = size(Long) div 4,
+    TotalCodepoints = size(Long) div 4,
+    SeedCodepoints = TotalCodepoints div 4,
+    SeedSize = SeedCodepoints * 4,
     <<_Pre:Start/binary, Seed:SeedSize/binary, _Post/binary>> = Long,
     {Start, Seed}.
 
