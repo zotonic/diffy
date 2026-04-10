@@ -164,7 +164,7 @@ compute_diff(OldText, NewText, CheckLines) ->
                                 false -> {NewText, OldText}
                             end,
 
-    case binary:match(LongText, ShortText) of
+    case aligned_utf32_match(LongText, ShortText, 0) of
         {Start, Length} ->
             <<Pre:Start/binary, _:Length/binary, Suf/binary>> = LongText,
             Op = diff_op(OldStNew),
@@ -255,7 +255,7 @@ half_match_i(Long, Short, I) ->
 best_common(Long, Short, Seed, SeedLoc, Start, 
         BestLongA, BestLongB, BestShortA, BestShortB, BestCommon) ->
     %% Check if we can find a match for Seed2 inside the shorttext.
-    case binary:match(Short, Seed, [{scope, {Start, size(Short)-Start}}]) of
+    case aligned_utf32_match(Short, Seed, Start) of
         nomatch -> 
             case size(BestCommon) * 2 >= size(Long) of
                 false -> 
@@ -293,6 +293,29 @@ best_common(Long, Short, Seed, SeedLoc, Start,
                 false ->
                     best_common(Long, Short, Seed, SeedLoc, next_char(Short, MatchStart), 
                         BestLongA, BestLongB, BestShortA, BestShortB, BestCommon)
+            end
+    end.
+
+%% @doc Round a byte offset up to the next UTF-32 codepoint boundary.
+align_utf32_offset(Offset) when Offset rem 4 =:= 0 ->
+    Offset;
+align_utf32_offset(Offset) ->
+    Offset + (4 - (Offset rem 4)).
+
+%% @doc Find a match whose start offset is aligned to a UTF-32 codepoint boundary.
+aligned_utf32_match(Bin, Pattern, Start) ->
+    AlignedStart = align_utf32_offset(Start),
+    case AlignedStart >= size(Bin) of
+        true ->
+            nomatch;
+        false ->
+            case binary:match(Bin, Pattern, [{scope, {AlignedStart, size(Bin) - AlignedStart}}]) of
+                nomatch ->
+                    nomatch;
+                {MatchStart, Length} when MatchStart rem 4 =:= 0 ->
+                    {MatchStart, Length};
+                {MatchStart, _Length} ->
+                    aligned_utf32_match(Bin, Pattern, MatchStart + 1)
             end
     end.
 
