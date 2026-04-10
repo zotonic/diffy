@@ -1502,7 +1502,7 @@ seed_test() ->
     Long8 = to_utf32(<<"12345678">>),
     ?assertEqual({0, to_utf32(<<"12">>)}, seed(Long8, 0)),
 
-    %% 5. 16 codepoints, Start=8 (byte offset = 2 codepoints in):
+    %% 5. 16 codepoints, Start=8 (8 bytes = 2 codepoints * 4 bytes/codepoint):
     %%    seed is 4 codepoints; returned Start equals 8 and seed bytes are the correct slice.
     Long16 = to_utf32(<<"abcdefghijklmnop">>),
     {S5, Seed5} = seed(Long16, 8),
@@ -1511,7 +1511,7 @@ seed_test() ->
 
     %% 6. ASCII text round-trip: "1234567890" (10 chars), seed at quarter-way offset.
     Ascii10 = to_utf32(<<"1234567890">>),
-    %% TotalCodepoints=10, SeedCodepoints=2; Start=0 (quarter-way = 0 for simplicity).
+    %% TotalCodepoints=10, SeedCodepoints=2; Start=0 to keep the offset 4-byte-aligned.
     {_, SeedAscii} = seed(Ascii10, 0),
     ?assertEqual(<<"12">>, to_utf8(SeedAscii)),
 
