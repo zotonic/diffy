@@ -320,57 +320,59 @@ diff_test() ->
                             <<"cat mouse dog ">>)),
     ok.
 
-compute_diff_aligned_utf32_match_test() ->
-    %% "foo" is a common suffix of "barfoo" and "foo".
-    %% split_pre_and_suffix strips "foo" as the common suffix,
-    %% so compute_diff sees OldText = <<"bar">>, NewText = <<>>, yielding
-    %% [{delete, <<"bar">>}], which is combined with the equal suffix.
-    ?assertEqual([{delete, <<"bar">>}, {equal, <<"foo">>}],
-                 diffy:diff(<<"barfoo">>, <<"foo">>)),
+compute_diff_substring_match_test() ->
+    %% Exercise the {Start, Length} branch of compute_diff/3 where
+    %% binary:match(LongText, ShortText) succeeds — i.e. the short text
+    %% is a verbatim substring of the long text.
 
-    %% "prefoo" and "foo" have no common prefix ('p' /= 'f').
-    %% split_pre_and_suffix strips "foo" as common suffix, so compute_diff sees
-    %% OldText = <<"pre">>, NewText = <<>>.
-    ?assertEqual([{delete, <<"pre">>}, {equal, <<"foo">>}],
-                 diffy:diff(<<"prefoo">>, <<"foo">>)),
-
-    %% ShortText ("test") found inside LongText ("a-test-b") — the
-    %% {Start, Length} arm of compute_diff fires directly.
+    %% "test" found inside "a-test-b": no common prefix ('t' /= 'a') and no
+    %% common suffix ('t' /= 'b'), so split_pre_and_suffix leaves both texts
+    %% unchanged.  compute_diff sees ShortText = <<"test">>, LongText =
+    %% <<"a-test-b">>, binary:match finds "test" at byte 2, producing:
+    %%   [{insert, <<"a-">>}, {equal, <<"test">>}, {insert, <<"-b">>}]
     ?assertEqual([{insert, <<"a-">>}, {equal, <<"test">>}, {insert, <<"-b">>}],
                  diffy:diff(<<"test">>, <<"a-test-b">>)),
 
-    %% With non-ASCII: the first character of NewText is U+0100 (Ā), which
-    %% differs from the first character 't' of OldText ("test"), so
-    %% split_pre_and_suffix strips "test" as the common suffix, leaving
-    %% OldText = <<>>, NewText = <<$\x{100}/utf8>>.
-    ?assertEqual([{insert, <<$\x{100}/utf8>>}, {equal, <<"test">>}],
-                 diffy:diff(<<"test">>, <<$\x{100}/utf8, "test">>)),
+    %% Reversed direction: "a-test-b" vs "test".
+    ?assertEqual([{delete, <<"a-">>}, {equal, <<"test">>}, {delete, <<"-b">>}],
+                 diffy:diff(<<"a-test-b">>, <<"test">>)),
+
+    %% "barfoo" vs "foo": split_pre_and_suffix strips "foo" as common suffix,
+    %% compute_diff sees <<"bar">> vs <<>>, yielding [{delete, <<"bar">>}].
+    %% Combined with suffix: [{delete, <<"bar">>}, {equal, <<"foo">>}].
+    ?assertEqual([{delete, <<"bar">>}, {equal, <<"foo">>}],
+                 diffy:diff(<<"barfoo">>, <<"foo">>)),
+
+    %% "prefoo" vs "foo": no common prefix ('p' /= 'f'), common suffix "foo"
+    %% stripped.  compute_diff sees <<"pre">> vs <<>>.
+    ?assertEqual([{delete, <<"pre">>}, {equal, <<"foo">>}],
+                 diffy:diff(<<"prefoo">>, <<"foo">>)),
 
     ok.
 
-aligned_utf32_match_realignment_test() ->
-    %% This test verifies that the diff engine correctly handles cases where
-    %% byte-level pattern matching could hit a non-codepoint-boundary offset
-    %% before the true aligned match.
+diff_non_ascii_prefix_test() ->
+    %% Verify that diff/2 handles non-ASCII characters correctly when they
+    %% precede an ASCII common suffix.
     %%
-    %% In UTF-32, U+0100 (Ā) encodes as <<0,0,1,0>> and $a (U+0061) as
-    %% <<0,0,0,97>>. In the UTF-32 sequence for [U+0100, U+0061]:
-    %%   <<0,0,1,0, 0,0,0,97>>
-    %% the bytes <<0,0,0,97>> appear at byte offset 3 (misaligned) AND at
-    %% byte offset 4 (aligned). The aligned_utf32_match retry logic must skip
-    %% the misaligned hit at offset 3 and return the aligned match at offset 4.
-    %%
-    %% We verify this indirectly: without correct realignment the engine would
-    %% try to split the binary at a non-codepoint boundary, causing a crash or
-    %% wrong result. The correct result is [{insert, <<Ā/utf8>>}, {equal, <<"a">>}].
+    %% diff(<<"a">>, <<Ā/utf8, "a">>):
+    %%   split_pre_and_suffix finds no common prefix (first bytes differ:
+    %%   97 vs 196), but "a" is a common suffix.  After stripping the suffix
+    %%   compute_diff sees <<>> vs <<196,128>> (Ā in UTF-8).
+    %%   Result: [{insert, <<Ā/utf8>>}, {equal, <<"a">>}].
     ?assertEqual(
         [{insert, <<$\x{100}/utf8>>}, {equal, <<"a">>}],
         diffy:diff(<<"a">>, <<$\x{100}/utf8, "a">>)),
 
-    %% A longer variant: two U+0100 codepoints precede "ab".
+    %% Longer variant: two Ā codepoints precede "ab".
+    %%   Common suffix "ab" stripped; compute_diff sees <<>> vs <<Ā/utf8, Ā/utf8>>.
     ?assertEqual(
         [{insert, <<$\x{100}/utf8, $\x{100}/utf8>>}, {equal, <<"ab">>}],
         diffy:diff(<<"ab">>, <<$\x{100}/utf8, $\x{100}/utf8, "ab">>)),
+
+    %% Non-ASCII: U+0100 (Ā) before "test".  No common prefix (196 /= 116),
+    %% common suffix "test" stripped; compute_diff sees <<>> vs <<Ā/utf8>>.
+    ?assertEqual([{insert, <<$\x{100}/utf8>>}, {equal, <<"test">>}],
+                 diffy:diff(<<"test">>, <<$\x{100}/utf8, "test">>)),
 
     ok.
 
