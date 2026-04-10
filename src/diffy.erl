@@ -196,20 +196,23 @@ try_half_match(OldText, NewText, CheckLines) ->
 %% Check if we can do a half-match diff, returns undefined if it is not advantageous.
 %% Operates on UTF-32 binaries — size comparisons are in bytes (4 bytes per codepoint).
 half_match(A, B) ->
-    AGtB = size(A) > size(B),
-    {Short, Long} = case AGtB of
-        true -> {B, A};
-        false -> {A, B}
-    end,
+    AgtB = size(A) > size(B),
+    {Short, Long} = case AgtB of
+                        true -> {B, A};
+                        false -> {A, B}
+                    end,
+
+    LongSize = size(Long),
+    ShortSize = size(Short),
 
     %% text_smaller_than(Long, 4) becomes size(Long) < 4*4 in UTF-32.
-    case size(Long) < 16 orelse size(Short) * 2 < size(Long) of
+    case LongSize < 16 orelse ShortSize * 2 < LongSize of
         true ->
             %% No point in looking.
             undefined;
         false ->
-            Hm1 = half_match_i(Long, Short, (size(Long) + 3) div 4),
-            Hm2 = half_match_i(Long, Short, (size(Long) + 1) div 2),
+            Hm1 = half_match_i(Long, Short, (LongSize + 3) div 4),
+            Hm2 = half_match_i(Long, Short, (LongSize + 1) div 2),
 
             %% Select the longest half-match.
             Hm = case {Hm1, Hm2} of
@@ -229,7 +232,7 @@ half_match(A, B) ->
             case Hm of
                 undefined -> undefined;
                 {half_match, T1A, T1B, T2A, T2B, MidCommon} ->
-                    case AGtB of
+                    case AgtB of
                         true -> Hm;
                         false ->
                             {half_match, T2A, T2B, T1A, T1B, MidCommon}
