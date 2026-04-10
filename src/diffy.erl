@@ -1219,7 +1219,7 @@ common_suffix(Text1, Text2) ->
 % @deprecated Use text_size32/1 internally. This public function may be removed in a future version.
 -spec text_size(unicode:unicode_binary()) -> non_neg_integer().
 text_size(Text) when is_binary(Text) ->
-    string:length(Text).
+    byte_size(to_utf32(Text)) div 4.
 
 % @doc Count the number of codepoints in a UTF-32 binary. O(1).
 text_size32(Text) when is_binary(Text) ->
