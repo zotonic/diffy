@@ -396,14 +396,11 @@ lines_to_chars(Text, Idx, CharText, NextChar, Lines, Map) ->
 
 
 insert_line(Line, Lines, Map, NextChar) ->
-    Hash = erlang:phash2(Line, ?PHASH2_RANGE),
     case Map of
-        %% Hash hit — verify the stored line matches to guard against collisions.
-        #{Hash := {Char, Line}} ->
+        #{Line := Char} ->
             {Char, NextChar, Lines, Map};
-        %% Hash miss or collision with a different line — assign a new index.
         _ ->
-            {NextChar, NextChar + 1, [Line | Lines], Map#{Hash => {NextChar, Line}}}
+            {NextChar, NextChar + 1, [Line | Lines], Map#{Line => NextChar}}
     end.
 
 decode_lines(Diffs, Lines) when is_list(Lines) ->
