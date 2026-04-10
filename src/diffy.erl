@@ -211,8 +211,11 @@ half_match(A, B) ->
             %% No point in looking.
             undefined;
         false ->
-            Hm1 = half_match_i(Long, Short, (LongSize + 3) div 4),
-            Hm2 = half_match_i(Long, Short, (LongSize + 1) div 2),
+            %% Seed positions are quarter-way and half-way through Long,
+            %% expressed as byte offsets (codepoints * 4).
+            LongLen = LongSize div 4,  %% codepoint count
+            Hm1 = half_match_i(Long, Short, ((LongLen + 3) div 4) * 4),
+            Hm2 = half_match_i(Long, Short, ((LongLen + 1) div 2) * 4),
 
             %% Select the longest half-match.
             Hm = case {Hm1, Hm2} of
@@ -298,16 +301,12 @@ next_char(_Bin, Pos) ->
     Pos + 4.
 
 %%
-%% In UTF-32 every codepoint is exactly 4 bytes, so any 4-byte-aligned slice
-%% is a valid codepoint boundary — no repair_head/repair_tail needed.
+%% In UTF-32 every codepoint is exactly 4 bytes. Start is always a 4-byte-aligned
+%% byte offset, so no alignment step is needed.
 seed(Long, Start) ->
     SeedSize = size(Long) div 4,
-
-    %% Align Start to a 4-byte (codepoint) boundary.
-    AlignedStart = (Start div 4) * 4,
-    <<_Pre:AlignedStart/binary, Seed:SeedSize/binary, _Post/binary>> = Long,
-
-    {AlignedStart, Seed}.
+    <<_Pre:Start/binary, Seed:SeedSize/binary, _Post/binary>> = Long,
+    {Start, Seed}.
 
 
 %% Line diff
@@ -1285,12 +1284,10 @@ half_match_utf8(A, B) ->
     end.
 
 half_match_test() ->
-    ?assertEqual(undefined, half_match_utf8(<<"1234567890">>, <<"abcdef">>)),
-    ?assertEqual(undefined, half_match_utf8(<<"12345">>, <<"23">>)),
+    ?assertEqual(undefined, half_match_utf8(<<"1234567890">>, <<"abcdef">>)), ?assertEqual(undefined, half_match_utf8(<<"12345">>, <<"23">>)),
 
     %% Single Match
-    ?assertEqual({half_match, <<"12">>, <<"90">>, <<"a">>, <<"z">>, <<"345678">>}, 
-        half_match_utf8(<<"1234567890">>, <<"a345678z">>)),
+    ?assertEqual({half_match, <<"12">>, <<"90">>, <<"a">>, <<"z">>, <<"345678">>}, half_match_utf8(<<"1234567890">>, <<"a345678z">>)),
     ?assertEqual({half_match, <<"a">>, <<"z">>, <<"12">>, <<"90">>, <<"345678">>}, 
         half_match_utf8(<<"a345678z">>, <<"1234567890">>)),
     ?assertEqual({half_match, <<"abc">>, <<"z">>, <<"1234">>, <<"0">>, <<"56789">>}, 
@@ -1310,6 +1307,24 @@ half_match_test() ->
 
     ?assertEqual({half_match, <<"qHillo">>, <<"w">>, <<"x">>, <<"Hulloy">>, <<"HelloHe">>}, 
         half_match_utf8(<<"qHilloHelloHew">>, <<"xHelloHeHulloy">>)),
+
+    ?assertEqual({half_match, <<"qHillo"/utf8>>, <<"w"/utf8>>, <<"x"/utf8>>, <<"eHull💯y"/utf8>>, <<"🐶🐱🐭🐹🐰H❤️"/utf8>>}, 
+        half_match_utf8(<<"qHillo🐶🐱🐭🐹🐰H❤️w"/utf8>>, <<"x🐶🐱🐭🐹🐰H❤️eHull💯y"/utf8>>)),
+
+    %% Unicode: é is 2 UTF-8 bytes but 1 codepoint (4 UTF-32 bytes).
+    %% With the old bug, size(Long) div 4 gave the wrong seed position
+    %% because byte_size in UTF-32 ≠ codepoint_count for multi-byte UTF-8 chars.
+    %% Long = éééééééééé (10 chars), Short = a + éééééééé + z (10 chars).
+    %% half_match should find the 8-char common section of é's.
+    E = <<233/utf8>>,
+    ULong = binary:copy(E, 10),
+    UShort = <<"a", (binary:copy(E, 8))/binary, "z">>,
+    UDiff = diff(ULong, UShort),
+    ?assertEqual(ULong, source_text(UDiff)),
+    ?assertEqual(UShort, destination_text(UDiff)),
+    %% The 8-char run of é must appear as a single equal op.
+    Equal8 = binary:copy(E, 8),
+    ?assert(lists:member({equal, Equal8}, UDiff)),
 
     ok.
 
