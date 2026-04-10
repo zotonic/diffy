@@ -1486,4 +1486,65 @@ diff_options_test() ->
 
     ok.
 
+seed_test() ->
+    %% 1. Empty binary: no codepoints, seed is empty.
+    ?assertEqual({0, <<>>}, seed(<<>>, 0)),
+
+    %% 2. Binary shorter than 4 codepoints (3 codepoints): 3 div 4 = 0, seed is empty.
+    Short3 = to_utf32(<<"abc">>),
+    ?assertEqual({0, <<>>}, seed(Short3, 0)),
+
+    %% 3. Exactly 4 codepoints, Start=0: seed is 1 codepoint (the first one).
+    Exact4 = to_utf32(<<"abcd">>),
+    ?assertEqual({0, to_utf32(<<"a">>)}, seed(Exact4, 0)),
+
+    %% 4. 8 codepoints, Start=0: seed is 2 codepoints starting at offset 0.
+    Long8 = to_utf32(<<"12345678">>),
+    ?assertEqual({0, to_utf32(<<"12">>)}, seed(Long8, 0)),
+
+    %% 5. 16 codepoints, Start=8 (byte offset = 2 codepoints in):
+    %%    seed is 4 codepoints; returned Start equals 8 and seed bytes are the correct slice.
+    Long16 = to_utf32(<<"abcdefghijklmnop">>),
+    {S5, Seed5} = seed(Long16, 8),
+    ?assertEqual(8, S5),
+    ?assertEqual(to_utf32(<<"cdef">>), Seed5),
+
+    %% 6. ASCII text round-trip: "1234567890" (10 chars), seed at quarter-way offset.
+    Ascii10 = to_utf32(<<"1234567890">>),
+    %% TotalCodepoints=10, SeedCodepoints=2; Start=0 (quarter-way = 0 for simplicity).
+    {_, SeedAscii} = seed(Ascii10, 0),
+    ?assertEqual(<<"12">>, to_utf8(SeedAscii)),
+
+    %% 7. Multi-byte codepoint alignment: 10 Greek letters (2 UTF-8 bytes each, 4 UTF-32 bytes each).
+    Greek10 = to_utf32(<<"αβγδεζηθικ"/utf8>>),
+    {Start7, Seed7} = seed(Greek10, 0),
+    %% Returned Start is 0.
+    ?assertEqual(0, Start7),
+    %% Seed is 4-byte-aligned.
+    ?assertEqual(0, byte_size(Seed7) rem 4),
+    %% Seed length = (10 div 4) * 4 = 8 bytes = 2 codepoints.
+    ?assertEqual((10 div 4) * 4, byte_size(Seed7)),
+    %% Seed decodes back to the first 2 Greek letters.
+    ?assertEqual(<<"αβ"/utf8>>, to_utf8(Seed7)),
+
+    %% 8. Emoji (4-byte UTF-8 codepoints): 10 emoji, seed is first 2.
+    Emoji10 = to_utf32(<<"🐶🐱🐭🐹🐰🐨🐯🦁🐮🐷"/utf8>>),
+    {_, SeedEmoji} = seed(Emoji10, 0),
+    %% Seed length = (10 div 4) * 4 = 8 bytes = 2 codepoints.
+    ?assertEqual((10 div 4) * 4, byte_size(SeedEmoji)),
+    %% Seed decodes back to the first 2 emoji.
+    ?assertEqual(<<"🐶🐱"/utf8>>, to_utf8(SeedEmoji)),
+
+    %% 9. Seed start offset preserved: non-zero Start is returned unchanged.
+    Long12 = to_utf32(<<"abcdefghijkl">>),
+    {Start9, _} = seed(Long12, 8),
+    ?assertEqual(8, Start9),
+
+    %% 10. Seed is a contiguous slice of Long: binary:part(Long, Start, byte_size(Seed)) =:= Seed.
+    Long20 = to_utf32(<<"abcdefghijklmnopqrst">>),
+    {Start10, Seed10} = seed(Long20, 8),
+    ?assertEqual(Seed10, binary:part(Long20, Start10, byte_size(Seed10))),
+
+    ok.
+
 -endif.
