@@ -65,7 +65,7 @@
 
 -define(PATCH_MARGIN, 4).
 -define(IS_INS_OR_DEL(Op), (Op =:= insert orelse Op =:= delete)).
--define(PHASH2_RANGE, (1 bsl 32)).
+-define(IS_UTF32_ALIGNED(Offset), (Offset rem 4 =:= 0)).
 
 -record(bisect_state, {
     k1start = 0, k1end = 0,
@@ -296,26 +296,24 @@ best_common(Long, Short, Seed, SeedLoc, Start,
             end
     end.
 
-%% @doc Round a byte offset up to the next UTF-32 codepoint boundary.
-align_utf32_offset(Offset) when Offset rem 4 =:= 0 ->
-    Offset;
-align_utf32_offset(Offset) ->
-    Offset + (4 - (Offset rem 4)).
-
 %% @doc Find a match whose start offset is aligned to a UTF-32 codepoint boundary.
-aligned_utf32_match(Bin, Pattern, Start) ->
-    AlignedStart = align_utf32_offset(Start),
-    case AlignedStart >= size(Bin) of
+aligned_utf32_match(Bin, Pattern, Start)
+  when ?IS_UTF32_ALIGNED(Start) andalso Start >= 0 ->
+    case Start + size(Pattern) > size(Bin) of
         true ->
             nomatch;
         false ->
-            case binary:match(Bin, Pattern, [{scope, {AlignedStart, size(Bin) - AlignedStart}}]) of
+            case binary:match(Bin, Pattern, [{scope, {Start, size(Bin) - Start}}]) of
                 nomatch ->
                     nomatch;
-                {MatchStart, Length} when MatchStart rem 4 =:= 0 ->
+                {MatchStart, Length} when ?IS_UTF32_ALIGNED(MatchStart) ->
+                    %% Match found, and it is correctly aligned.
                     {MatchStart, Length};
                 {MatchStart, _Length} ->
-                    aligned_utf32_match(Bin, Pattern, MatchStart + 1)
+                    %% Misaligned hit. binary:match found the first byte-level match,
+                    %% so there is no aligned match before MatchStart. Skip directly
+                    %% to the next aligned boundary after MatchStart.
+                    aligned_utf32_match(Bin, Pattern, MatchStart + (4 - MatchStart rem 4))
             end
     end.
 
@@ -1544,6 +1542,36 @@ seed_test() ->
     Long20 = to_utf32(<<"abcdefghijklmnopqrst">>),
     {Start10, Seed10} = seed(Long20, 8),
     ?assertEqual(Seed10, binary:part(Long20, Start10, byte_size(Seed10))),
+
+    ok.
+
+aligned_utf32_match_test() ->
+    ?assertEqual(nomatch, aligned_utf32_match(<<>>, <<0,0,0,0>>, 0)),
+    ?assertEqual(nomatch, aligned_utf32_match(<<>>, <<0,0,0,0>>, 4)),
+
+    ?assertError(function_clause, aligned_utf32_match(<<>>, <<0,0,0,0>>, 3)),
+    ?assertError(function_clause, aligned_utf32_match(<<>>, <<0,0,0,0>>, -4)),
+
+    ?assertEqual({0, 4}, aligned_utf32_match(<<1,2,3,4>>, <<1,2,3,4>>, 0)),
+    ?assertEqual({4, 4}, aligned_utf32_match(<<0,0,0,0, 1,2,3,4>>, <<1,2,3,4>>, 0)),
+
+    %% These will binary match, but the match is not on a utf32 boundary
+    ?assertEqual(nomatch, aligned_utf32_match(<<0,0,1,2, 3,4,5,6>>, <<1,2,3,4>>, 0)),
+    ?assertEqual({8,4}, aligned_utf32_match(<<0,0,1,2, 3,4,5,6, 1,2,3,4>>, <<1,2,3,4>>, 0)),
+    ?assertEqual({8,4}, aligned_utf32_match(<<0,0,1,2, 3,4,5,6, 1,2,3,4>>, <<1,2,3,4>>, 4)),
+    ?assertEqual(nomatch, aligned_utf32_match(<<0,0,1,2, 3,4,5,1, 2,3,4,0>>, <<1,2,3,4>>, 4)),
+
+    %% Some longer matches
+    ?assertEqual({40, 20}, aligned_utf32_match(to_utf32(<<"the quick brown fox jumps over the lazy dog"/utf8>>),
+                                               to_utf32(<<"brown"/utf8>>), 0)),
+    ?assertEqual(nomatch, aligned_utf32_match(to_utf32(<<"the quick brown fox jumps over the lazy dog"/utf8>>),
+                                              to_utf32(<<"blue"/utf8>>), 0)),
+
+    %% All emoticon matches emoticons
+    ?assertEqual(nomatch, aligned_utf32_match(to_utf32(<<"😔😟😕🙁☹️😣😖😫😩🥺🥶"/utf8>>),
+                                              to_utf32(<<"💩"/utf8>>), 0)),
+    ?assertEqual({16,12}, aligned_utf32_match(to_utf32(<<"😔😟😕🙁☹️💩😣😖😫😩🥺🥶"/utf8>>),
+                                              to_utf32(<<"☹️💩"/utf8>>), 0)),
 
     ok.
 
