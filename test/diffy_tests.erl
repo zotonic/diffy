@@ -267,6 +267,7 @@ cleanup_semantic_test() ->
     ?assertEqual(diffy:destination_text(Diffs), diffy:destination_text(Cleaned)),
 
     ok.
+
 cleanup_efficiency_prop_test() ->
     ?assertEqual(true, proper:quickcheck(prop_cleanup_efficiency(), [{numtests, ?NUM_TESTS}, {to_file, user}])),
     ok.

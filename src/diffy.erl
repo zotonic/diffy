@@ -911,10 +911,13 @@ common_overlap(Text1, Text2) ->
     T1Len = text_size32(Text1),
     T2Len = text_size32(Text2),
     {T1, T2, TMin} = if
-        T1Len > T2Len -> {substring_end(Text1, T2Len), Text2, T2Len};
-        T1Len < T2Len -> {Text1, substring_start(Text2, T1Len), T1Len};
-        true -> {Text1, Text2, T1Len}
-    end,
+                         T1Len > T2Len ->
+                             {substring_end(Text1, T2Len), Text2, T2Len};
+                         T1Len < T2Len ->
+                             {Text1, substring_start(Text2, T1Len), T1Len};
+                         true ->
+                             {Text1, Text2, T1Len}
+                     end,
     case T1 =:= T2 of
         true -> TMin;
         false -> common_overlap_loop(T1, T2, TMin, 0, 1)
@@ -922,18 +925,18 @@ common_overlap(Text1, Text2) ->
 
 common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
     Pattern = substring_end(T1, Length),
-    case binary:match(T2, Pattern) of
+    case aligned_utf32_match(T2, Pattern, 0) of
         nomatch -> Best;
         {FoundByteOffset, _} ->
             %% In UTF-32, byte offset maps directly to codepoint count.
             FoundCharCount = FoundByteOffset div 4,
             NewLength = Length + FoundCharCount,
-            if
-                NewLength > TMin -> Best;
-                true ->
+            case NewLength > TMin of
+                true -> Best;
+                false ->
                     case substring_end(T1, NewLength) =:= substring_start(T2, NewLength) of
                         true ->
-                            common_overlap_loop(T1, T2, TMin, NewLength, NewLength + 1);
+                           common_overlap_loop(T1, T2, TMin, NewLength, NewLength + 1);
                         false ->
                             common_overlap_loop(T1, T2, TMin, Best, NewLength + 1)
                     end
@@ -1574,5 +1577,17 @@ aligned_utf32_match_test() ->
                                               to_utf32(<<"☹️💩"/utf8>>), 0)),
 
     ok.
+
+common_overlap_loop_test() ->
+    Abc = to_utf32(<<"abc">>),
+    Cde = to_utf32(<<"cde">>),
+    ?assertEqual(1, common_overlap_loop(Abc, Cde, size(Cde), 0, 1)),
+
+    Abcdef = to_utf32(<<"abcdef">>),
+    Efde = to_utf32(<<"efde">>),
+    ?assertEqual(2, common_overlap_loop(Abcdef, Efde, size(Cde), 0, 1)),
+
+    ok.
+
 
 -endif.
