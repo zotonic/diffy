@@ -1237,11 +1237,25 @@ text_smaller_than(Text, Size) ->
 
 % @doc Convert a UTF-8 binary to UTF-32, crashing on invalid input.
 to_utf32(Bin) ->
-    <<_/binary>> = unicode:characters_to_binary(Bin, utf8, utf32).
+    case unicode:characters_to_binary(Bin, utf8, utf32) of
+        Out when is_binary(Out) ->
+            Out;
+        {error, _, _} ->
+            error(badarg);
+        {incomplete, _, _} ->
+            error(badarg)
+    end.
 
 % @doc Convert a UTF-32 binary to UTF-8, crashing on invalid input.
 to_utf8(Bin) ->
-    <<_/binary>> = unicode:characters_to_binary(Bin, utf32, utf8).
+    case unicode:characters_to_binary(Bin, utf32, utf8) of
+        Out when is_binary(Out) ->
+            Out;
+        {error, _, _} ->
+            error(badarg);
+        {incomplete, _, _} ->
+            error(badarg)
+    end.
 
 %%
 %% Tests
