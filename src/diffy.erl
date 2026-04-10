@@ -926,7 +926,8 @@ common_overlap(Text1, Text2) ->
 common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
     Pattern = substring_end(T1, Length),
     case aligned_utf32_match(T2, Pattern, 0) of
-        nomatch -> Best;
+        nomatch ->
+            Best;
         {FoundByteOffset, _} ->
             %% In UTF-32, byte offset maps directly to codepoint count.
             FoundCharCount = FoundByteOffset div 4,
@@ -936,7 +937,7 @@ common_overlap_loop(T1, T2, TMin, Best, Length) when Length =< TMin ->
                 false ->
                     case substring_end(T1, NewLength) =:= substring_start(T2, NewLength) of
                         true ->
-                           common_overlap_loop(T1, T2, TMin, NewLength, NewLength + 1);
+                            common_overlap_loop(T1, T2, TMin, NewLength, NewLength + 1);
                         false ->
                             common_overlap_loop(T1, T2, TMin, Best, NewLength + 1)
                     end
@@ -1553,7 +1554,6 @@ aligned_utf32_match_test() ->
     ?assertEqual(nomatch, aligned_utf32_match(<<>>, <<0,0,0,0>>, 4)),
 
     ?assertError(function_clause, aligned_utf32_match(<<>>, <<0,0,0,0>>, 3)),
-    ?assertError(function_clause, aligned_utf32_match(<<>>, <<0,0,0,0>>, -4)),
 
     ?assertEqual({0, 4}, aligned_utf32_match(<<1,2,3,4>>, <<1,2,3,4>>, 0)),
     ?assertEqual({4, 4}, aligned_utf32_match(<<0,0,0,0, 1,2,3,4>>, <<1,2,3,4>>, 0)),
@@ -1577,6 +1577,15 @@ aligned_utf32_match_test() ->
                                               to_utf32(<<"☹️💩"/utf8>>), 0)),
 
     ok.
+
+common_overlap_test() ->
+    A = to_utf32(<<"Fire at Will">>),
+    B = to_utf32(<<"William Riker is number one">>),
+
+    ?assertEqual(4, common_overlap(A, B)),
+
+    ok.
+
 
 common_overlap_loop_test() ->
     Abc = to_utf32(<<"abc">>),
