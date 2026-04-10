@@ -314,7 +314,7 @@ text_size_test() ->
     ?assertEqual(4, diffy:text_size(<<1046/utf8, 1011/utf8, 1022/utf8, 127/utf8>>)),
 
     %% Bad utf-8 input results in a badarg.
-    ?assertError({badarg, _}, diffy:text_size(<<149,157,112,8>>)),
+    ?assertError(badarg, diffy:text_size(<<149,157,112,8>>)),
 
     ok.
 
