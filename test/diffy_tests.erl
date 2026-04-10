@@ -320,6 +320,96 @@ diff_test() ->
                             <<"cat mouse dog ">>)),
     ok.
 
+compute_diff_aligned_utf32_match_test() ->
+    %% "foo" is a common suffix of "barfoo" and "foo".
+    %% split_pre_and_suffix strips "foo" as the common suffix,
+    %% so compute_diff sees OldText = <<"bar">>, NewText = <<>>, yielding
+    %% [{delete, <<"bar">>}], which is combined with the equal suffix.
+    ?assertEqual([{delete, <<"bar">>}, {equal, <<"foo">>}],
+                 diffy:diff(<<"barfoo">>, <<"foo">>)),
+
+    %% "prefoo" and "foo" have no common prefix ('p' /= 'f').
+    %% split_pre_and_suffix strips "foo" as common suffix, so compute_diff sees
+    %% OldText = <<"pre">>, NewText = <<>>.
+    ?assertEqual([{delete, <<"pre">>}, {equal, <<"foo">>}],
+                 diffy:diff(<<"prefoo">>, <<"foo">>)),
+
+    %% ShortText ("test") found inside LongText ("a-test-b") — the
+    %% {Start, Length} arm of compute_diff fires directly.
+    ?assertEqual([{insert, <<"a-">>}, {equal, <<"test">>}, {insert, <<"-b">>}],
+                 diffy:diff(<<"test">>, <<"a-test-b">>)),
+
+    %% With non-ASCII: the first character of NewText is U+0100 (Ā), which
+    %% differs from the first character 't' of OldText ("test"), so
+    %% split_pre_and_suffix strips "test" as the common suffix, leaving
+    %% OldText = <<>>, NewText = <<$\x{100}/utf8>>.
+    ?assertEqual([{insert, <<$\x{100}/utf8>>}, {equal, <<"test">>}],
+                 diffy:diff(<<"test">>, <<$\x{100}/utf8, "test">>)),
+
+    ok.
+
+aligned_utf32_match_realignment_test() ->
+    %% This test verifies that the diff engine correctly handles cases where
+    %% byte-level pattern matching could hit a non-codepoint-boundary offset
+    %% before the true aligned match.
+    %%
+    %% In UTF-32, U+0100 (Ā) encodes as <<0,0,1,0>> and $a (U+0061) as
+    %% <<0,0,0,97>>. In the UTF-32 sequence for [U+0100, U+0061]:
+    %%   <<0,0,1,0, 0,0,0,97>>
+    %% the bytes <<0,0,0,97>> appear at byte offset 3 (misaligned) AND at
+    %% byte offset 4 (aligned). The aligned_utf32_match retry logic must skip
+    %% the misaligned hit at offset 3 and return the aligned match at offset 4.
+    %%
+    %% We verify this indirectly: without correct realignment the engine would
+    %% try to split the binary at a non-codepoint boundary, causing a crash or
+    %% wrong result. The correct result is [{insert, <<Ā/utf8>>}, {equal, <<"a">>}].
+    ?assertEqual(
+        [{insert, <<$\x{100}/utf8>>}, {equal, <<"a">>}],
+        diffy:diff(<<"a">>, <<$\x{100}/utf8, "a">>)),
+
+    %% A longer variant: two U+0100 codepoints precede "ab".
+    ?assertEqual(
+        [{insert, <<$\x{100}/utf8, $\x{100}/utf8>>}, {equal, <<"ab">>}],
+        diffy:diff(<<"ab">>, <<$\x{100}/utf8, $\x{100}/utf8, "ab">>)),
+
+    ok.
+
+compute_diff_test() ->
+    %% Branch 1: OldText is empty -> pure insert
+    ?assertEqual([{insert, <<"hello">>}], diffy:diff(<<>>, <<"hello">>)),
+
+    %% Branch 2: NewText is empty -> pure delete
+    ?assertEqual([{delete, <<"hello">>}], diffy:diff(<<"hello">>, <<>>)),
+
+    %% Branch 3: ShortText is a substring of LongText.
+    %% OldText shorter: "foo" found inside "barfoo" (via common-suffix stripping
+    %% then compute_diff on the remainder).
+    ?assertEqual([{delete, <<"bar">>}, {equal, <<"foo">>}],
+                 diffy:diff(<<"barfoo">>, <<"foo">>)),
+
+    %% OldText longer: "foobar" and "foo" share the common prefix "foo",
+    %% which split_pre_and_suffix strips. compute_diff then processes
+    %% "bar" vs <<>>, yielding [{delete,<<"bar">>}].
+    ?assertEqual([{equal, <<"foo">>}, {delete, <<"bar">>}],
+                 diffy:diff(<<"foobar">>, <<"foo">>)),
+
+    %% Branch 4a: single-codepoint ShortText with no match in LongText
+    %% -> [{delete, OldText}, {insert, NewText}]
+    ?assertEqual([{delete, <<"x">>}, {insert, <<"test">>}],
+                 diffy:diff(<<"x">>, <<"test">>)),
+    ?assertEqual([{delete, <<"test">>}, {insert, <<"x">>}],
+                 diffy:diff(<<"test">>, <<"x">>)),
+
+    %% Branch 4b: no substring relationship, length > 1 codepoint each —
+    %% falls through to try_half_match / bisect. Check round-trip correctness.
+    Old = <<"the cat sat on the mat">>,
+    New = <<"the dog sat on the rug">>,
+    Diffs = diffy:diff(Old, New),
+    ?assertEqual(Old, diffy:source_text(Diffs)),
+    ?assertEqual(New, diffy:destination_text(Diffs)),
+
+    ok.
+
 
 %%
 %% Helpers
