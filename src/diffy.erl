@@ -109,14 +109,14 @@ diff(Text1, Text2, Options) when is_list(Options) ->
     T2 = to_utf32(Text2),
     Diffs32 = diff32(T1, T2, CheckLines),
     Diffs1 = case lists:member(semantic, Options) of
-        true  -> cleanup_semantic32(Diffs32);
-        false -> Diffs32
-    end,
+                 true  -> cleanup_semantic32(Diffs32);
+                 false -> Diffs32
+             end,
     Diffs2 = case efficiency_opt(Options) of
-        none           -> Diffs1;
-        default        -> cleanup_efficiency32(Diffs1);
-        {custom, Cost} -> cleanup_efficiency32(Diffs1, Cost)
-    end,
+                 none           -> Diffs1;
+                 default        -> cleanup_efficiency32(Diffs1);
+                 {custom, Cost} -> cleanup_efficiency32(Diffs1, Cost)
+             end,
     %% Single conversion at the exit boundary.
     [{Op, to_utf8(D)} || {Op, D} <- Diffs2].
 
@@ -519,12 +519,10 @@ compute_diff_bisect1(A, B, M, N) ->
                                 true ->
                                     % Mirror x2 onto top-left coordinate system.
                                     X2 = M - V2AtOffset,
-                                    if 
-                                        X1_1 >= X2 ->
-                                            % Overlap detected
-                                            throw({overlap, X1_1, Y1_1});
-                                        true ->
-                                            {continue, S2_1}
+                                    case X1_1 >= X2 of 
+                                        % Overlap detected
+                                        true -> throw({overlap, X1_1, Y1_1});
+                                        false -> {continue, S2_1}
                                     end;
                                 false -> {continue, S2_1}
                             end
@@ -568,13 +566,11 @@ compute_diff_bisect1(A, B, M, N) ->
                                 true ->
                                     X1 = V1AtOffset,
                                     Y1 = VOffset + X1 - K1Offset,
-                                    if 
-                                        % Mirror x2 onto top-left coordinate system.
-                                        X1 >= M - X2_1 ->
-                                            % Overlap detected
-                                            throw({overlap, X1, Y1});
-                                        true ->
-                                            {continue, S4_1}
+                                    % Mirror x2 onto top-left coordinate system.
+                                    case X1 >= M - X2_1 of
+                                        % Overlap detected
+                                        true -> throw({overlap, X1, Y1});
+                                        false -> {continue, S4_1}
                                     end;
                                 false -> {continue, S4_1}
                             end
@@ -795,13 +791,13 @@ cleanup_semantic_lossless([], Acc) ->
 slide_edit(E1, Edit, E2) ->
     Suffix = common_suffix(E1, Edit),
     {E1_1, Edit_1, E2_1} = case Suffix of
-        <<>> -> {E1, Edit, E2};
-        _ ->
-            SLen = size(Suffix),
-            { binary:part(E1, 0, size(E1) - SLen),
-              <<Suffix/binary, (binary:part(Edit, 0, size(Edit) - SLen))/binary>>,
-              <<Suffix/binary, E2/binary>> }
-    end,
+                               <<>> -> {E1, Edit, E2};
+                               _ ->
+                                   SLen = size(Suffix),
+                                   { binary:part(E1, 0, size(E1) - SLen),
+                                     <<Suffix/binary, (binary:part(Edit, 0, size(Edit) - SLen))/binary>>,
+                                     <<Suffix/binary, E2/binary>> }
+                           end,
     find_best_slide(E1_1, Edit_1, E2_1).
 
 find_best_slide(E1, Edit, E2) ->
@@ -815,11 +811,9 @@ find_best_slide(E1, Edit, E2, BestScore, BestE1, BestEdit, BestE2) ->
             NewEdit = <<RestEdit/binary, Char/binary>>,
             NewE2 = RestE2,
             NewScore = cleanup_semantic_score(NewE1, NewEdit) + cleanup_semantic_score(NewEdit, NewE2),
-            if
-                NewScore >= BestScore ->
-                    find_best_slide(NewE1, NewEdit, NewE2, NewScore, NewE1, NewEdit, NewE2);
-                true ->
-                    find_best_slide(NewE1, NewEdit, NewE2, BestScore, BestE1, BestEdit, BestE2)
+            case NewScore >= BestScore of 
+                true -> find_best_slide(NewE1, NewEdit, NewE2, NewScore, NewE1, NewEdit, NewE2);
+                false -> find_best_slide(NewE1, NewEdit, NewE2, BestScore, BestE1, BestEdit, BestE2)
             end;
         false ->
             {BestE1, BestEdit, BestE2}
@@ -861,25 +855,25 @@ cleanup_semantic_overlaps([{delete, Del}, {insert, Ins} | T], Acc) ->
     Overlap2 = common_overlap(Ins, Del),
     TDel = text_size32(Del),
     TIns = text_size32(Ins),
-    if
-        Overlap1 >= Overlap2 ->
-            if
-                Overlap1 * 2 >= TDel orelse Overlap1 * 2 >= TIns ->
+    case Overlap1 >= Overlap2 of
+        true ->
+            case Overlap1 * 2 >= TDel orelse Overlap1 * 2 >= TIns of
+                true ->
                     Common = binary:part(Ins, 0, Overlap1 * 4),
                     NewDel = binary:part(Del, 0, (TDel - Overlap1) * 4),
                     NewIns = binary:part(Ins, Overlap1 * 4, (TIns - Overlap1) * 4),
                     cleanup_semantic_overlaps([{insert, NewIns} | T], [{equal, Common}, {delete, NewDel} | Acc]);
-                true ->
+                false ->
                     cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
             end;
-        true ->
-            if
-                Overlap2 * 2 >= TIns orelse Overlap2 * 2 >= TDel ->
+        false ->
+            case Overlap2 * 2 >= TIns orelse Overlap2 * 2 >= TDel of
+                true ->
                     Common = binary:part(Ins, (TIns - Overlap2) * 4, Overlap2 * 4),
                     NewIns = binary:part(Ins, 0, (TIns - Overlap2) * 4),
                     NewDel = binary:part(Del, Overlap2 * 4, (TDel - Overlap2) * 4),
                     cleanup_semantic_overlaps([{delete, NewDel} | T], [{equal, Common}, {insert, NewIns} | Acc]);
-                true ->
+                false ->
                     cleanup_semantic_overlaps([{insert, Ins} | T], [{delete, Del} | Acc])
             end
     end;
@@ -958,7 +952,7 @@ last_char(Bin) ->
 is_blankline_end(Bin) when byte_size(Bin) >= 8 ->
     Size = byte_size(Bin),
     case Bin of
-        <<_:(Size-8)/binary,  $\n:32, $\n:32>>       -> true;
+        <<_:(Size-8)/binary,  $\n:32, $\n:32>>         -> true;
         <<_:(Size-12)/binary, $\n:32, $\r:32, $\n:32>> -> true;
         _ -> false
     end;
@@ -966,9 +960,9 @@ is_blankline_end(_) -> false.
 
 is_blankline_start(Bin) when byte_size(Bin) >= 8 ->
     case Bin of
-        <<$\n:32, $\n:32, _/binary>>             -> true;
-        <<$\n:32, $\r:32, $\n:32, _/binary>>     -> true;
-        <<$\r:32, $\n:32, $\n:32, _/binary>>     -> true;
+        <<$\n:32, $\n:32, _/binary>>                 -> true;
+        <<$\n:32, $\r:32, $\n:32, _/binary>>         -> true;
+        <<$\r:32, $\n:32, $\n:32, _/binary>>         -> true;
         <<$\r:32, $\n:32, $\r:32, $\n:32, _/binary>> -> true;
         _ -> false
     end;
@@ -1001,8 +995,8 @@ cleanup_efficiency32([], Changed, _EditCost, Acc) ->
     end;
 %% Any equality which is surrounded on both sides by an insertion and deletion need less then 
 %% EditCost characters for it to be advantageous to split.
-cleanup_efficiency32([{O1, _}=A, {equal, XY}=E, {O2, _}=B | T], Changed, EditCost, Acc) when 
-        O1 =/= O2 andalso ?IS_INS_OR_DEL(O1) andalso ?IS_INS_OR_DEL(O2) ->
+cleanup_efficiency32([{O1, _}=A, {equal, XY}=E, {O2, _}=B | T], Changed, EditCost, Acc)
+  when O1 =/= O2 andalso ?IS_INS_OR_DEL(O1) andalso ?IS_INS_OR_DEL(O2) ->
     case text_smaller_than(XY, EditCost) of
         true ->
             Del = {delete, XY},
@@ -1014,8 +1008,8 @@ cleanup_efficiency32([{O1, _}=A, {equal, XY}=E, {O2, _}=B | T], Changed, EditCos
 %% Any equality which is surrounded on one side by an existing insertion and deletion and on the 
 %% other side by an existing insertion or deletion needs less than half C characters long for it 
 %% to be advantageous to split.
-cleanup_efficiency32([{O1, _}=A, {O2, _}=B, {equal, X}=E, {O3, _}=C | T], Changed, EditCost, Acc) when
-    O1 =/= O2 andalso ?IS_INS_OR_DEL(O1) andalso ?IS_INS_OR_DEL(O2) andalso ?IS_INS_OR_DEL(O3) ->
+cleanup_efficiency32([{O1, _}=A, {O2, _}=B, {equal, X}=E, {O3, _}=C | T], Changed, EditCost, Acc)
+  when O1 =/= O2 andalso ?IS_INS_OR_DEL(O1) andalso ?IS_INS_OR_DEL(O2) andalso ?IS_INS_OR_DEL(O3) ->
     case text_smaller_than(X, EditCost div 2 + 1) of
         true ->
             Del = {delete, X},
