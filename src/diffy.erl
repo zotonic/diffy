@@ -390,31 +390,27 @@ cleanup_line_diff([{equal, _}=E|Rest], DeleteData, InsertData, _TmpAcc, Acc) ->
 %% Text1 and Text2 are UTF-32 binaries. Lines are stored as UTF-32 binaries.
 %% CharText1/CharText2 are UTF-32 binaries where each 4-byte word is a line index.
 lines_to_chars(Text1, Text2) ->
-    Utf8Text1 = to_utf8(Text1),
-    Utf8Text2 = to_utf8(Text2),
-    {CharText1, NextChar, Lines1, Map1} = lines_to_chars(Utf8Text1, 0, <<>>, 0, [], #{}),
-    {CharText2, _, Lines2, _Map2} = lines_to_chars(Utf8Text2, 0, <<>>, NextChar, Lines1, Map1),
-
+    {CharText1, NextChar, Lines1, Map1} = lines_to_chars(Text1, 0, <<>>, 0, [], #{}),
+    {CharText2, _, Lines2, _Map2} = lines_to_chars(Text2, 0, <<>>, NextChar, Lines1, Map1),
     {CharText1, CharText2, lists:reverse(Lines2)}.
 
 %% Transform each unique line into a 4-byte index; store line content as UTF-32.
 lines_to_chars(Text, Idx, CharText, NextChar, Lines, Map) when Idx >= byte_size(Text) ->
     {CharText, NextChar, Lines, Map};
-lines_to_chars(Text, Idx, CharText, NextChar, Lines, Map) ->
-    case binary:match(Text, <<"\n">>, [{scope, {Idx, byte_size(Text)-Idx}}]) of
+lines_to_chars(Text, Idx, CharText, NextChar, Lines, Map) when ?IS_UTF32_ALIGNED(Idx) ->
+    case aligned_utf32_match(Text, <<$\n:32>>, Idx) of
         nomatch ->
             <<_:Idx/binary, Line/binary>> = Text,
-            {Char, NextChar1, Lines1, Map1} = insert_line(to_utf32(Line), Lines, Map, NextChar),
+            {Char, NextChar1, Lines1, Map1} = insert_line(Line, Lines, Map, NextChar),
             CharText1 = <<CharText/binary, Char:32>>,
             {CharText1, NextChar1, Lines1, Map1};
         {Start, _} ->
-            LineLength = Start - Idx + 1,
+            LineLength = Start - Idx + 4,
             <<_:Idx/binary, Line:LineLength/binary, _/binary>> = Text,
-            {Char, NextChar1, Lines1, Map1} = insert_line(to_utf32(Line), Lines, Map, NextChar),
+            {Char, NextChar1, Lines1, Map1} = insert_line(Line, Lines, Map, NextChar),
             CharText1 = <<CharText/binary, Char:32>>,
             lines_to_chars(Text, Idx + LineLength, CharText1, NextChar1, Lines1, Map1)
     end.
-
 
 insert_line(Line, Lines, Map, NextChar) ->
     case Map of
@@ -1555,11 +1551,8 @@ aligned_utf32_match_test() ->
 common_overlap_test() ->
     A = to_utf32(<<"Fire at Will">>),
     B = to_utf32(<<"William Riker is number one">>),
-
     ?assertEqual(4, common_overlap(A, B)),
-
     ok.
-
 
 common_overlap_loop_test() ->
     Abc = to_utf32(<<"abc">>),
@@ -1571,6 +1564,5 @@ common_overlap_loop_test() ->
     ?assertEqual(2, common_overlap_loop(Abcdef, Efde, size(Cde), 0, 1)),
 
     ok.
-
 
 -endif.
