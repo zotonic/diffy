@@ -45,8 +45,7 @@
 
     text_size/1,
 
-    split_pre_and_suffix/2,
-    unique_match/2
+    split_pre_and_suffix/2
 ]).
 
 -type diff_op() :: delete | equal | insert.
@@ -1123,24 +1122,6 @@ make_patch([{equal, Data}|T], PrePatchText, PostPatchText, Count1, Count2, [Patc
         
     make_patch(T, PrePatchText, PostPatchText, Count1+Size, Count2+Size, [P|Rest]).
 
-    
-% @doc Returns true iff Pattern is a unique match inside Text.
-unique_match(Pattern, Text) ->
-    TextSize = size(Text),
-    case binary:match(Text, Pattern) of
-        nomatch -> 
-            error(nomatch);
-        {Start, Length} when Start + 1 + Length < TextSize ->
-            %% We have a match, and we can search..
-            case binary:match(Text, Pattern, [{scope, {Start+1, TextSize-Start-1}}]) of
-                nomatch -> true;
-                {_, _} -> false
-            end;
-        {_, _} ->
-            true
-    end.
-
-
 %%
 %% Helpers
 %%
@@ -1409,13 +1390,6 @@ split_pre_and_suffix_test() ->
     ?assertEqual({<<"aa">>, <<"bb">>, <<"c">>, <<"dd">>}, Split(<<"aabbdd">>, <<"aacdd">>)),
     ?assertEqual({<<"cat ">>, <<>>, <<"mouse dog ">>, <<>>},
                  Split(<<"cat ">>, <<"cat mouse dog ">>)),
-    ok.
-
-unique_match_test() ->
-    ?assertEqual(true, unique_match(<<"a">>, <<"abc">>)),
-    ?assertEqual(true, unique_match(<<"b">>, <<"abc">>)),
-    ?assertEqual(true, unique_match(<<"c">>, <<"abc">>)),
-    ?assertEqual(false, unique_match(<<"ab">>, <<"abab">>)),
     ok.
 
 text_smaller_than_test() ->
