@@ -65,6 +65,9 @@
 -define(PATCH_MARGIN, 4).
 -define(IS_INS_OR_DEL(Op), (Op =:= insert orelse Op =:= delete)).
 -define(IS_UTF32_ALIGNED(Offset), (Offset rem 4 =:= 0)).
+-define(IS_WS(C), (C =:= $\s orelse C =:= $\t orelse C =:= $\n orelse C =:= $\r orelse C =:= $\f orelse C =:= $\v)).
+-define(IS_LB(C), (C =:= $\n orelse C =:= $\r)).
+-define(IS_ALPHA(C), ((C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse (C >= $0 andalso C =< $9))).
 
 -record(bisect_state, {
     k1start = 0, k1end = 0,
@@ -833,12 +836,12 @@ cleanup_semantic_score(_, <<>>) -> 6;
 cleanup_semantic_score(One, Two) ->
     Char1 = last_char(One),
     Char2 = first_char(Two),
-    NonAlphaNumeric1 = is_non_alphanumeric(Char1),
-    NonAlphaNumeric2 = is_non_alphanumeric(Char2),
-    Whitespace1 = NonAlphaNumeric1 andalso is_whitespace(Char1),
-    Whitespace2 = NonAlphaNumeric2 andalso is_whitespace(Char2),
-    LineBreak1 = Whitespace1 andalso is_linebreak(Char1),
-    LineBreak2 = Whitespace2 andalso is_linebreak(Char2),
+    NonAlphaNumeric1 = not ?IS_ALPHA(Char1),
+    NonAlphaNumeric2 = not ?IS_ALPHA(Char2),
+    Whitespace1 = NonAlphaNumeric1 andalso ?IS_WS(Char1),
+    Whitespace2 = NonAlphaNumeric2 andalso ?IS_WS(Char2),
+    LineBreak1 = Whitespace1 andalso ?IS_LB(Char1),
+    LineBreak2 = Whitespace2 andalso ?IS_LB(Char2),
     BlankLine1 = LineBreak1 andalso is_blankline_end(One),
     BlankLine2 = LineBreak2 andalso is_blankline_start(Two),
     if
@@ -950,27 +953,6 @@ last_char(Bin) ->
     Size = byte_size(Bin),
     <<_:(Size-4)/binary, C:32>> = Bin,
     C.
-
-is_non_alphanumeric(undefined) -> true;
-is_non_alphanumeric(C) ->
-    not ((C >= $a andalso C =< $z) orelse
-         (C >= $A andalso C =< $Z) orelse
-         (C >= $0 andalso C =< $9)).
-
-is_whitespace(undefined) -> false;
-is_whitespace(C) ->
-    case C of
-        $\s -> true;
-        $\t -> true;
-        $\n -> true;
-        $\r -> true;
-        $\f -> true;
-        $\v -> true;
-        _ -> false
-    end.
-
-is_linebreak(C) ->
-    C =:= $\n orelse C =:= $\r.
 
 %% In UTF-32 each codepoint is 4 bytes, so newline patterns are fixed-width.
 is_blankline_end(Bin) when byte_size(Bin) >= 8 ->
