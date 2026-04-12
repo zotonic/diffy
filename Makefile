@@ -36,7 +36,7 @@ clean_doc:
 
 distclean: clean_doc
 	@rm -rf _build
-	@rm $(REBAR)
+	@rm -f $(REBAR)
 
 doc: $(REBAR)
 	$(REBAR) ex_doc --output doc --formatter html
