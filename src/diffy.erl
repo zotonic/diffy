@@ -62,6 +62,7 @@
 
 -export_type([diff_op/0, diff/0, diffs/0, diff_option/0]).
 
+-define(DEFAULT_EDIT_COST, 4).
 -define(PATCH_MARGIN, 4).
 -define(IS_INS_OR_DEL(Op), (Op =:= insert orelse Op =:= delete)).
 -define(IS_UTF32_ALIGNED(Offset), (Offset rem 4 =:= 0)).
@@ -104,38 +105,27 @@ diff(Text1, Text2) ->
 % Cleanups are always applied in the correct order: semantic first, then efficiency.
 -spec diff(unicode:unicode_binary(), unicode:unicode_binary(), [diff_option()]) -> diffs().
 diff(Text1, Text2, Options) when is_list(Options) ->
-    CheckLines = not lists:member(no_linemode, Options),
     T1 = to_utf32(Text1),
     T2 = to_utf32(Text2),
+    CheckLines = not proplists:get_value(no_linemode, Options, false),
     Diffs32 = diff32(T1, T2, CheckLines),
-    Diffs1 = case lists:member(semantic, Options) of
+    Diffs1 = case proplists:get_value(semantic, Options) of
                  true  -> cleanup_semantic32(Diffs32);
-                 false -> Diffs32
+                 _ -> Diffs32
              end,
-    Diffs2 = case efficiency_opt(Options) of
-                 none           -> Diffs1;
-                 default        -> cleanup_efficiency32(Diffs1);
-                 {custom, Cost} -> cleanup_efficiency32(Diffs1, Cost)
+    Diffs2 = case proplists:get_value(efficiency, Options) of
+                 true -> cleanup_efficiency32(Diffs1);
+                 Cost when is_integer(Cost) andalso Cost > 0 -> cleanup_efficiency32(Diffs1, Cost);
+                 _ -> Diffs1
              end,
     %% Single conversion at the exit boundary.
     [{Op, to_utf8(D)} || {Op, D} <- Diffs2].
 
-%% Extract the efficiency option, preferring {efficiency, Cost} over plain efficiency.
-efficiency_opt(Options) ->
-    case lists:keyfind(efficiency, 1, Options) of
-        {efficiency, Cost} -> {custom, Cost};
-        false ->
-            case lists:member(efficiency, Options) of
-                true  -> default;
-                false -> none
-            end
-    end.
-
 %% Internal diff working entirely in UTF-32 binaries.
-diff32(<<>>, <<>>, _CheckLines) ->
-    [];
-diff32(Text1, Text2, _CheckLines) when Text1 =:= Text2 ->
-    [{equal, Text1}];
+diff32(<<>>, <<>>, _CheckLines) -> [];
+diff32(<<>>, Text2, _CheckLines) -> [{insert, Text2}];
+diff32(Text1, <<>>, _CheckLines) -> [{delete, Text1}];
+diff32(Text1, Text2, _CheckLines) when Text1 =:= Text2 -> [{equal, Text1}];
 diff32(Text1, Text2, CheckLines) ->
     {Prefix, MText1, MText2, Suffix} = split_pre_and_suffix(Text1, Text2),
 
@@ -154,10 +144,8 @@ diff32(Text1, Text2, CheckLines) ->
     cleanup_merge32(Diffs2).
 
 %% This assumes Text1 and Text2 don't have a common prefix. Operates on UTF-32.
-compute_diff(<<>>, NewText, _CheckLines) ->
-    [{insert, NewText}];
-compute_diff(OldText, <<>>, _CheckLines) ->
-    [{delete, OldText}];
+compute_diff(<<>>, NewText, _CheckLines) -> [{insert, NewText}];
+compute_diff(OldText, <<>>, _CheckLines) -> [{delete, OldText}];
 compute_diff(OldText, NewText, CheckLines) ->
     OldStNew = size(OldText) < size(NewText),
 
@@ -981,7 +969,7 @@ cleanup_efficiency(Diffs, EditCost) ->
 
 %% Internal efficiency cleanup operating on UTF-32 diffs.
 cleanup_efficiency32(Diffs) ->
-    cleanup_efficiency32(Diffs, 4).
+    cleanup_efficiency32(Diffs, ?DEFAULT_EDIT_COST).
 
 cleanup_efficiency32(Diffs, EditCost) ->
     cleanup_efficiency32(Diffs, false, EditCost, []).
