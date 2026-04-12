@@ -114,9 +114,9 @@ diff(Text1, Text2, Options) when is_list(Options) ->
                  _ -> Diffs32
              end,
     Diffs2 = case proplists:get_value(efficiency, Options) of
+                 NoEfficiency when NoEfficiency =:= undefined orelse NoEfficiency =:= false  -> Diffs1;
                  true -> cleanup_efficiency32(Diffs1);
-                 Cost when is_integer(Cost) andalso Cost > 0 -> cleanup_efficiency32(Diffs1, Cost);
-                 _ -> Diffs1
+                 Cost when is_integer(Cost) andalso Cost > 0 -> cleanup_efficiency32(Diffs1, Cost)
              end,
     %% Single conversion at the exit boundary.
     [{Op, to_utf8(D)} || {Op, D} <- Diffs2].
