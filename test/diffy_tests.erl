@@ -48,6 +48,13 @@ prop_cleanup_merge() ->
             andalso DestinationText =:= diffy:destination_text(CleanDiffs)
         end).
 
+prop_cleanup_merge_idempotent() ->
+    ?FORALL(Diffs, list({diff_op(), proper_unicode:utf8()}),
+        begin
+            Cleaned = cleanup_merge(Diffs),
+            Cleaned =:= cleanup_merge(Cleaned)
+        end).
+
 prop_cleanup_efficiency() ->
     ?FORALL(Diffs, list({diff_op(), proper_unicode:utf8()}),
         begin
@@ -232,6 +239,24 @@ cleanup_merge_test() ->
         cleanup_merge([{equal, <<"x">>}, {delete, <<"ca">>}, {equal, <<"c">>}, {delete, <<"b">>}, {equal, <<"a">>}])),
 
     ok.
+
+%% delete/insert/delete — the two deletes merge, then insert must be re-checked
+%% against the equal below it, which should then slide
+requeue_i_test() ->
+    ?assertEqual([{delete, <<"aXa">>}, {insert, <<"b">>}],
+                 cleanup_merge([{delete, <<"a">>}, {insert, <<"b">>}, {delete, <<"Xa">>}])).
+
+%% Three consecutive deletes separated by inserts collapse correctly
+triple_delete_test() ->
+    ?assertEqual([{delete, <<"abc">>}, {insert, <<"xyz">>}],
+                 cleanup_merge([{delete, <<"a">>}, {insert, <<"x">>},
+                                {delete, <<"b">>}, {insert, <<"y">>},
+                                {delete, <<"c">>}, {insert, <<"z">>}])).
+
+%% After sliding, the two equals on either side should merge into one
+slide_merge_test() ->
+    ?assertEqual([{insert, <<"aX">>}, {equal, <<"abc">>}],
+                 cleanup_merge([{equal, <<"a">>}, {insert, <<"Xa">>}, {equal, <<"bc">>}])).
 
 cleanup_merge_prop_test() ->
     ?assertEqual(true, proper:quickcheck(prop_cleanup_merge(), [{numtests, ?NUM_TESTS}, {to_file, user}])),

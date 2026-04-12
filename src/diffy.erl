@@ -658,8 +658,7 @@ cleanup_merge(Diffs) ->
 
 %% Internal cleanup_merge operating on UTF-32 diffs.
 cleanup_merge32(Diffs) ->
-    Diffs1 = cleanup_merge32(Diffs, []),
-    canonicalize_edits(Diffs1, []).
+    cleanup_merge32(Diffs, []).
 
 %% Done
 cleanup_merge32([], Acc) ->
@@ -667,19 +666,25 @@ cleanup_merge32([], Acc) ->
 %% Remove operations without data.
 cleanup_merge32([{_Op, <<>>}|T], Acc) ->
     cleanup_merge32(T, Acc);
-%% Merge data from equal operations
+%% Ensure delete/insert ordering: if insert is on top and a delete arrives, sink the insert.
+cleanup_merge32([{delete, _}=D|T], [{insert, _}=I|Acc]) ->
+    cleanup_merge32([D, I|T], Acc);
+%% Merge data from equal operations.
 cleanup_merge32([{Op2, Data2}|T], [{Op1, Data1}|Acc]) when Op1 =:= Op2 ->
     cleanup_merge32(T, [{Op1, <<Data1/binary, Data2/binary>>}|Acc]);
-%% Cleanup edits before equal operation
-cleanup_merge32([{Op1, Data1}|T], [{Op2, _}=I, {Op3, Data3}|Acc]) when Op1 =/= Op2 andalso Op1 =:= Op3 andalso Op2 =/= equal andalso Op3 =/= equal ->
-    cleanup_merge32(T, [I, {Op3, <<Data3/binary, Data1/binary>>}|Acc]);
-%% Check if Op1Data and Op2Data have common prefixes.
-cleanup_merge32([{equal, E1}|T], [{Op1, Op1Data}, {Op2, Op2Data}, {equal, E2}|Acc]) when Op1 =/= Op2 andalso Op1 =/= equal andalso Op2 =/= equal ->
+%% Cleanup edits before equal operation — re-queue merged op for further processing.
+cleanup_merge32([{Op1, Data1}|T], [{Op2, _}=I, {Op3, Data3}|Acc])
+        when Op1 =/= Op2 andalso Op1 =:= Op3 andalso Op2 =/= equal andalso Op3 =/= equal ->
+    cleanup_merge32([I, {Op3, <<Data3/binary, Data1/binary>>} | T], Acc);
+%% Factor out common prefixes and suffixes from adjacent insert/delete pairs.
+cleanup_merge32([{equal, E1}|T], [{Op1, Op1Data}, {Op2, Op2Data}, {equal, E2}|Acc])
+        when Op1 =/= Op2 andalso Op1 =/= equal andalso Op2 =/= equal ->
     {Prefix, Op1DataD, Op2DataD, Suffix} = split_pre_and_suffix(Op1Data, Op2Data),
     cleanup_merge32(T, [{equal, <<Suffix/binary, E1/binary>>},
         {Op1, Op1DataD}, {Op2, Op2DataD}, {equal, <<E2/binary, Prefix/binary>>}|Acc]);
-%% Check for slide left and slide right edits
-cleanup_merge32([{equal, E1}=H|T], [{Op, I}, {equal, E2}|AccTail]=Acc) when Op =:= insert orelse Op =:= delete ->
+%% Slide edits left and right.
+cleanup_merge32([{equal, E1}=H|T], [{Op, I}, {equal, E2}|AccTail]=Acc)
+        when Op =:= insert orelse Op =:= delete ->
     case is_suffix(E2, I) of
         false ->
             case is_prefix(E1, I) of
@@ -697,13 +702,6 @@ cleanup_merge32([{equal, E1}=H|T], [{Op, I}, {equal, E2}|AccTail]=Acc) when Op =
     end;
 cleanup_merge32([H|T], Acc) ->
     cleanup_merge32(T, [H|Acc]).
-
-canonicalize_edits([{insert, I}, {delete, D} | T], Acc) ->
-    canonicalize_edits(T, [{insert, I}, {delete, D} | Acc]);
-canonicalize_edits([H | T], Acc) ->
-    canonicalize_edits(T, [H | Acc]);
-canonicalize_edits([], Acc) ->
-    lists:reverse(Acc).
 
 % @doc Do semantic cleanup of diffs
 %
