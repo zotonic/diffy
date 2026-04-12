@@ -1533,11 +1533,11 @@ common_overlap_test() ->
 common_overlap_loop_test() ->
     Abc = to_utf32(<<"abc">>),
     Cde = to_utf32(<<"cde">>),
-    ?assertEqual(1, common_overlap_loop(Abc, Cde, size(Cde), 0, 1)),
+    ?assertEqual(1, common_overlap_loop(Abc, Cde, text_size(Cde), 0, 1)),
 
     Abcdef = to_utf32(<<"abcdef">>),
     Efde = to_utf32(<<"efde">>),
-    ?assertEqual(2, common_overlap_loop(Abcdef, Efde, size(Cde), 0, 1)),
+    ?assertEqual(2, common_overlap_loop(Abcdef, Efde, text_size(Efde), 0, 1)),
 
     ok.
 
