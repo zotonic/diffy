@@ -51,7 +51,7 @@ prop_cleanup_merge() ->
 prop_cleanup_merge_idempotent() ->
     ?FORALL(Diffs, list({diff_op(), proper_unicode:utf8()}),
         begin
-            % Cleaning the diffs again shoul not result in more changes
+            % Cleaning the diffs again should not result in more changes
             Cleaned = cleanup_merge(Diffs),
             Cleaned =:= cleanup_merge(Cleaned)
         end).
