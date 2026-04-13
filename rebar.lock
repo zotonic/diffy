@@ -1,11 +1,1 @@
-{"1.2.0",
-[{<<"proper">>,{pkg,<<"proper">>,<<"1.2.0">>},0},
- {<<"zotonic_stdlib">>,{pkg,<<"zotonic_stdlib">>,<<"1.2.3">>},0}]}.
-[
-{pkg_hash,[
- {<<"proper">>, <<"1466492385959412A02871505434E72E92765958C60DBA144B43863554B505A4">>},
- {<<"zotonic_stdlib">>, <<"4A33B60C82379169C9934CCD1FC9E512CA16B922E131AD6B6D26E562F66DF9CC">>}]},
-{pkg_hash_ext,[
- {<<"proper">>, <<"CBC3766C08337806741343D330BF4BCB826155D2141BE8514C4B02858AA19FD3">>},
- {<<"zotonic_stdlib">>, <<"4712DD7A0C0C600AFEDAFDA738D40FEBF10CFC2485E62D109361FCC190F7381A">>}]}
-].
+[].

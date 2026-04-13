@@ -28,13 +28,18 @@ xref: $(REBAR)
 dialyzer: $(REBAR)
 	$(REBAR) as test dialyzer
 
-clean: $(REBAR)
+clean: $(REBAR) clean_doc
 	$(REBAR) clean
 
-distclean:
-	rm -rf _build
-	rm $(REBAR)
+clean_doc:
+	@rm -rf doc
 
+distclean: clean_doc
+	@rm -rf _build
+	@rm -f $(REBAR)
+
+doc: $(REBAR)
+	$(REBAR) ex_doc --output doc --formatter html
 
 # dializer 
 

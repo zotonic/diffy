@@ -2,8 +2,9 @@
 %% @copyright 2014 Maas-Maarten Zeeman
 %%
 %% @doc Diffy, an erlang diff match and patch implementation 
+%% @end
 %%
-%% Copyright 2014 Maas-Maarten Zeeman
+%% Copyright 2014-2026 Maas-Maarten Zeeman
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
