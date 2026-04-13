@@ -26,11 +26,10 @@
     diff/2
 ]).
 
--type diff_op() :: delete | equal | insert.
--type diff() :: {diff_op(), term()}.
+-type diff() :: {diffy:diff_op(), term()}.
 -type diffs() :: list(diff()).
 
--export_type([ diffs/0 ]).
+-export_type([ diff/0, diffs/0 ]).
 
 -spec diff(list(), list()) -> diffs().
 diff(A, A) ->
@@ -42,7 +41,7 @@ diff([], B) ->
 diff(A, B) when is_list(A), is_list(B) ->
     {Dict0, N} = term_dict(A, dict:new(), 0),
     {Dict, _N} = term_dict(B, Dict0, N),
-    Diff = diffy:diff(map_terms(A, Dict), map_terms(B, Dict)),
+    Diff = diffy:diff(map_terms(A, Dict), map_terms(B, Dict), [no_linemode]),
     unmap_diff(Diff, Dict).
 
 term_dict([], D, N) ->
@@ -69,7 +68,6 @@ unmap_diff_1({Op, B}, RDict) ->
     {Op, [ dict:fetch(C, RDict) || C <- Cs ]}.
 
 
-
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -89,7 +87,5 @@ diffy_term_test() ->
         diffy_term:diff([a,b,c,d,e], [a,e,b,c,d])),
     ok.
 
-
 -endif.
-
 
