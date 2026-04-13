@@ -72,10 +72,10 @@ prop_cleanup_semantic() ->
         begin
             SourceText = diffy:source_text(Diffs),
             DestinationText = diffy:destination_text(Diffs),
-            EfficientDiffs = cleanup_semantic(Diffs),
+            SemanticDiffs = cleanup_semantic(Diffs),
 
-            SourceText =:= diffy:source_text(EfficientDiffs)
-            andalso DestinationText =:= diffy:destination_text(EfficientDiffs)
+            SourceText =:= diffy:source_text(SemanticDiffs)
+            andalso DestinationText =:= diffy:destination_text(SemanticDiffs)
         end).
 
 html_like() ->
