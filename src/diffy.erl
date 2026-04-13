@@ -957,7 +957,7 @@ is_blankline_start(_) -> false.
 %
 -spec cleanup_efficiency(diffs()) -> diffs().
 cleanup_efficiency(Diffs) ->
-    cleanup_efficiency(Diffs, 4).
+    cleanup_efficiency(Diffs, ?DEFAULT_EDIT_COST).
 
 -spec cleanup_efficiency(diffs(), pos_integer()) -> diffs().
 cleanup_efficiency(Diffs, EditCost) ->
